@@ -1,186 +1,126 @@
 import streamlit as st
-from openai import OpenAI
-import json
+import pandas as pd
 import plotly.graph_objects as go
 import requests
-import random
-import time
+from openai import OpenAI
 
-# --- 1. 界面与专业推演样式配置 ---
-st.set_page_config(page_title="SHENCE - 复杂社会系统大模型仿真沙盘", layout="wide")
+# --- 1. 网页外观设置（回归经典亮色版） ---
+st.set_page_config(page_title="神策 - 全网态势推演引擎", layout="wide")
+
+# 移除之前的黑色 CSS 样式，恢复默认外观
 st.markdown("""
     <style>
-    .block-container { max-width: 98% !important; padding: 1rem 2% !important; background-color: #0b0e14; }
-    .stMarkdown, p, h3, h2, h1 { color: #c9d1d9 !important; }
-    
-    /* 数值仪表盘：MiroFish 风格 */
-    .metric-container {
-        display: flex; justify-content: space-between; gap: 10px; margin-bottom: 25px;
+    .stMetric { 
+        background-color: #f0f2f6; 
+        border-radius: 10px; 
+        padding: 15px; 
+        border: 1px solid #dcdfe6;
     }
-    .metric-card { 
-        flex: 1; background-color: #161b22; padding: 20px; border-radius: 12px; 
-        border: 1px solid #30363d; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-    }
-    .metric-value { font-size: 2.2rem; font-weight: bold; margin: 10px 0; font-family: 'Courier New'; }
-    
-    /* 逻辑演化路径 */
-    .logic-box { 
-        background-color: #0d1117; padding: 30px; border-left: 8px solid #58a6ff; 
-        border-radius: 8px; margin: 20px 0; font-family: 'Consolas', monospace; 
-        color: #8b949e; border: 1px solid #30363d; line-height: 1.8;
-    }
-    
-    /* 角色博弈卡片 */
-    .role-card { 
-        padding: 25px; border-radius: 12px; min-height: 500px; 
-        border: 1px solid #30363d; background: #161b22; margin-bottom: 20px;
-    }
-    .role-header { font-size: 1.3rem; font-weight: bold; margin-bottom: 15px; border-bottom: 1px solid #30363d; padding-bottom: 10px; }
-    
-    /* 研判报告：政务级排版 */
-    .report-card { 
-        background-color: #ffffff; padding: 50px; border-radius: 20px; color: #1a1a1a !important;
-        border-top: 20px solid #1f6feb; box-shadow: 0 20px 60px rgba(0,0,0,0.6); width: 100%; margin-top: 40px;
-    }
-    .report-card h2, .report-card h3, .report-card p { color: #1a1a1a !important; }
-    .swan-alert { background-color: #3e1e1e; border: 2px solid #da3633; padding: 20px; border-radius: 10px; margin: 20px 0; }
     </style>
-    """, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
-# --- 2. 核心 API 配置 ---
-SECRET_KEY = "sk-LMB9VBTefa210eFC3581T3BLbkFJB0a3Bc8553a8406eb3B3"
-BASE_URL = "https://api.ohmygpt.com/v1"
-SERPER_API_KEY = "d57fbcfd2ecd16f71b9b131984050fab2c64d707" 
-client = OpenAI(api_key=SECRET_KEY, base_url=BASE_URL)
+# --- 2. 侧边栏：核心功能与配置 ---
+with st.sidebar:
+    st.title("⚙️ 系统配置")
+    st.info("请完成 API 授权以启动推演引擎")
+    
+    # 侧边栏功能项
+    llm_key = st.text_input("DeepSeek/OpenAI API Key", type="password", help="用于驱动 AI 角色的思维")
+    serper_key = st.text_input("Serper (联网) Key", type="password", help="用于获取全网实时情报")
+    base_url = st.text_input("API Base URL", value="https://api.deepseek.com")
+    
+    st.divider()
+    st.subheader("推演参数设定")
+    rounds = st.slider("迭代博弈轮次", 1, 5, 3)
+    temp = st.slider("思维发散度", 0.0, 1.0, 0.7)
+    
+    st.divider()
+    st.caption("版本：神策 v2.1 (Classic White)")
 
-# --- 3. MiroFish 仿真逻辑模块 ---
-
-def fetch_historical_evidence(query):
-    """【功能一：实证搜寻】基于 Serper 抓取真实社会学事实"""
-    search_url = "https://google.serper.dev/search"
-    headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
-    payload = json.dumps({"q": f"{query} 历史案例 真实民众表现 处置教训 供应链瘫痪 社会动荡", "num": 10})
+# --- 3. 核心处理引擎 ---
+def get_osint_data(query, key):
+    if not key: return "未连接实时情报源，将使用静态数据。"
+    url = "https://google.serper.dev/search"
+    headers = {'X-API-KEY': key, 'Content-Type': 'application/json'}
     try:
-        res = requests.post(search_url, headers=headers, data=payload, timeout=12)
-        results = res.json().get('organic', [])
-        return "\n".join([f"事实点: {r.get('snippet')}" for r in results])
-    except: return "未获取到在线实证，启用高保真社会学经验模型推演。"
+        resp = requests.post(url, headers=headers, json={"q": query, "num": 5})
+        data = resp.json().get('organic', [])
+        return "\n".join([f"【实时消息】{r['title']}: {r['snippet']}" for r in data])
+    except: return "情报获取失败。"
 
-def initialize_matrix(event, facts):
-    """【功能二：数值化社会矩阵】初始化四个核心参数"""
-    prompt = f"基于事件 {event} 和实证 {facts}，请初始化四个数值(0-100)：1.行政效能、2.焦虑指数、3.资源缺口、4.动荡风险。仅返回 JSON 格式。"
+def run_ai_logic(client, system_prompt, user_input):
     try:
-        res = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"user","content":prompt}], response_format={"type":"json_object"}).choices[0].message.content
-        return json.loads(res)
-    except: return {"行政效能": 70, "焦虑指数": 40, "资源缺口": 30, "动荡风险": 20}
+        completion = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_input}],
+            temperature=temp
+        )
+        return completion.choices[0].message.content
+    except Exception as e: return f"调用失败: {str(e)}"
 
-def simulate_step(step_id, facts, matrix, event):
-    """【功能三：三步时空增量演化】模拟多智能体连续博弈"""
-    prompt = f"""
-    推演阶段: 第 {step_id} 阶段 (增量演化)
-    环境实证: {facts}
-    当前矩阵: {matrix}
-    初始扰动: {event}
-    请模拟该时段内各主体的真实表现：
-    1. 官方：行政博弈与硬核管控决策。
-    2. 民众：基于马斯洛生存需求的生存反应（体现真实的自私、互助、恐慌冲突）。
-    3. 传播：非数字环境下的口头信息发酵。
-    4. 风险：逻辑漏洞审计。
-    返回 JSON 格式：{{'official': '', 'citizen': '', 'media': '', 'audit': ''}}
-    """
-    res = client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":prompt}], response_format={"type":"json_object"}).choices[0].message.content
-    return json.loads(res)
+# --- 4. 主界面布局 ---
+st.title("🛰️ 神策：全网舆情态势仿真与演化推演系统")
+st.write("欢迎使用神策系统。本平台结合实时 OSINT 情报与多智能体博弈技术，通过模拟不同社会角色的对抗与协作，预判事件演化趋势。")
 
-def generate_black_swan():
-    """【功能四：随机黑天鹅扰动】增加仿真的不可控深度"""
-    swans = ["核心应急仓库发生火灾","备用发电机组因燃油污染集体停摆","外部恶意势力利用短波电台煽动动乱","极端天气突然恶化导致物理救援完全中断","关键决策官员突发健康危机造成指挥真空"]
-    return random.choice(swans)
+# 事件输入区
+event_input = st.text_area("🚀 输入目标推演事件", placeholder="请输入需要分析的突发事件关键词...", height=100)
 
-# --- 4. 主程序流程 ---
-st.title("🛡️ SHENCE (神策) | 实证数据驱动·复杂系统仿真沙盘")
-st.caption("内核版本：MiroFish-v3.0 | 仿真模式：多主体增量演化博弈")
-
-event_input = st.text_area("📡 输入初始扰动事件 (Initial Shock Event)", placeholder="例如：超大城市遭遇大规模黑客攻击导致电力、水利系统全面瘫痪48小时，且通讯信号基站大规模宕机...", height=100)
-
-if st.button("🚀 启动全维度深度演化仿真"):
-    if not event_input:
-        st.warning("请输入事件关键词！")
+if st.button("开始全维度推演", type="primary"):
+    if not llm_key:
+        st.warning("请在侧边栏配置 API Key 后再试。")
     else:
-        with st.status("🛠️ 系统正在初始化仿真环境并检索 PESTEL 事实...", expanded=True) as status:
-            
-            # 第一阶段：实证数据采集
-            st.write("🌐 联网检索全球历史案例事实...")
-            facts_data = fetch_historical_evidence(event_input)
-            
-            # 第二阶段：数值矩阵初始化
-            st.write("📈 构建初始社会属性矩阵...")
-            matrix_data = initialize_matrix(event_input, facts_data)
-            
-            # 第三阶段：演化模拟循环 (模拟核心博弈过程)
-            st.write("🔄 正在运行 T+24H 演化循环 (智能体博弈)...")
-            step_result = simulate_step("时空演化阶段-爆发期", facts_data, matrix_data, event_input)
-            
-            # 第四阶段：黑天鹅计算
-            st.write("🦢 正在计算环境随机扰动 (Black Swan Event)...")
-            random_swan = generate_black_swan()
-            
-            # 第五阶段：PESTEL 建模与报告生成
-            st.write("📜 正在整合 PESTEL 数据撰写全维度战略报告...")
-            report_prompt = f"基于实证 {facts_data}、演化结果 {step_result} 以及突发扰动 {random_swan}。为事件 {event_input} 撰写深度战略研判报告。要求：1.物理崩溃点分析；2.社会心理转折点预测；3.硬核行政干预方案。"
-            final_report = client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":report_prompt}]).choices[0].message.content
-            
-            status.update(label="✅ 仿真演化完毕：数据已对齐实证教训", state="complete")
-
-        # --- 页面显示：MiroFish 专业版布局 ---
-
-        # 1. 数值矩阵展示
-        st.markdown("### 📊 当前社会系统状态矩阵 (Numerical Matrix)")
-        m_keys = list(matrix_data.keys())
-        m_vals = list(matrix_data.values())
-        cols = st.columns(len(m_keys))
-        for i, col in enumerate(cols):
-            with col:
-                color = "#58a6ff" if "效能" in m_keys[i] else "#da3633"
-                st.markdown(f"""
-                    <div class='metric-card'>
-                        <div style='color: #8b949e'>{m_keys[i]}</div>
-                        <div class='metric-value' style='color: {color}'>{m_vals[i]}%</div>
-                    </div>
-                """, unsafe_allow_html=True)
-
-        # 2. PESTEL 因果链
-        st.divider()
-        st.markdown("### 🔗 PESTEL 深度因果演化链条 (Causal Chain Modeling)")
-        causal_res = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"user","content":f"为 {event_input} 生成基于 PESTEL 维度的深度因果环路文本链条"}]).choices[0].message.content
-        st.markdown(f"<div class='logic-box'>{causal_res.replace('->', ' ➔ ')}</div>", unsafe_allow_html=True)
-
-        # 3. 多主体演化博弈展示 (四列并排)
-        st.divider()
-        st.markdown("### 🔄 智能体多维博弈回溯 (Multi-Agent Interaction)")
-        c1, c2, c3, c4 = st.columns(4)
-        with c1: 
-            st.markdown(f"<div class='role-card'><div class='role-header' style='color:#58a6ff'>🏛️ 官方决策</div>{step_result.get('official')}</div>", unsafe_allow_html=True)
-        with c2: 
-            st.markdown(f"<div class='role-card'><div class='role-header' style='color:#d29922'>⚠️ 民众反应</div>{step_result.get('citizen')}</div>", unsafe_allow_html=True)
-        with c3: 
-            st.markdown(f"<div class='role-card'><div class='role-header' style='color:#238636'>📢 信息传播</div>{step_result.get('media')}</div>", unsafe_allow_html=True)
-        with c4: 
-            st.markdown(f"<div class='role-card'><div class='role-header' style='color:#da3633'>🛡️ 逻辑审计</div>{step_result.get('audit')}</div>", unsafe_allow_html=True)
-
-        # 4. 随机扰动 (黑天鹅)
-        st.markdown(f"""
-            <div class='swan-alert'>
-                <h3 style='color:#ff7b72; margin-top:0;'>🚨 随机黑天鹅扰动 (Stochastic Shock)</h3>
-                <p style='color:#e0e0e0; font-size:1.1rem;'>系统模拟过程中检测到低概率突发变量：<b>{random_swan}</b>。该变量已自动反馈至终期研判报告中。</p>
-            </div>
-        """, unsafe_allow_html=True)
-
-        # 5. 战略研判报告 (全屏展示)
-        st.divider()
-        st.markdown(f"<div class='report-card'><h2>📝 全维度深度战略研判报告 (MiroFish-v3)</h2><br>{final_report}</div>", unsafe_allow_html=True)
+        client = OpenAI(api_key=llm_key, base_url=base_url)
         
-        # 导出按钮
-        st.download_button(label="📥 下载全量仿真推演报告", data=final_report, file_name="ShenCe_Report.md", mime="text/markdown")
+        # 步骤 A: 实时搜索
+        with st.status("正在搜寻全网情报...", expanded=True) as status:
+            real_news = get_osint_data(event_input, serper_key)
+            st.write(real_news)
+            status.update(label="情报抓取完成", state="complete")
+        
+        # 步骤 B: 推演博弈
+        metrics_data = {"轮次": [0], "稳定度指数": [80], "恐慌指数": [20]}
+        current_context = f"初始事件: {event_input}\n搜集情报: {real_news}"
+        
+        tab_flow, tab_chart = st.tabs(["🕒 博弈演化过程", "📊 态势量化面板"])
+        
+        with tab_flow:
+            for r in range(rounds):
+                st.markdown(f"#### 第 {r+1} 轮：利益相关方博弈")
+                c1, c2, c3 = st.columns(3)
+                
+                agents = {
+                    "政府/官方": "侧重政策解读与秩序维护。格式：【行动】内容 【数值】稳定度(+/-)",
+                    "公众/媒体": "侧重情绪反应与舆论传播。格式：【反馈】内容 【数值】恐慌度(+/-)",
+                    "外部观察者": "客观分析潜在风险与未来走向。格式：【观察】内容 【数值】热度(+/-)"
+                }
+                
+                round_log = ""
+                for i, (name, prompt) in enumerate(agents.items()):
+                    with [c1, c2, c3][i]:
+                        st.markdown(f"**{name}**")
+                        ans = run_ai_logic(client, prompt, f"背景: {current_context}")
+                        st.info(ans)
+                        round_log += f"{name}: {ans}\n"
+                
+                current_context += f"\n第{r+1}轮推演: {round_log}"
+                
+                # 模拟数据变化
+                metrics_data["轮次"].append(r+1)
+                metrics_data["稳定度指数"].append(max(0, metrics_data["稳定度指数"][-1] - 5))
+                metrics_data["恐慌指数"].append(min(100, metrics_data["恐慌指数"][-1] + 8))
 
+        with tab_chart:
+            st.subheader("📈 态势演化趋势图")
+            df = pd.DataFrame(metrics_data)
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=df['轮次'], y=df['稳定度指数'], name='稳定度', line=dict(color='#2ecc71', width=3)))
+            fig.add_trace(go.Scatter(x=df['轮次'], y=df['恐慌指数'], name='恐慌度', line=dict(color='#e74c3c', width=3)))
+            fig.update_layout(xaxis_title="博弈轮次", yaxis_title="指数分值")
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.divider()
+            st.subheader("📜 综合研判报告")
+            final_rpt = run_ai_logic(client, "你是首席战略分析师，请根据上述所有推演过程给出一份最终研判结论和应对对策。", current_context)
+            st.success(final_rpt)
 else:
-    st.info("💡 请输入初始扰动事件。系统将自动调用 Serper 联网接口抓取实证教训，并启动复杂系统仿真演化。")
+    st.caption("系统就绪，请输入指令后点击启动。")
