@@ -3,141 +3,158 @@ from openai import OpenAI
 import json
 import plotly.graph_objects as go
 import requests
+import pandas as pd
 
-# --- 1. 严格全宽垂直布局样式 ---
+# --- 1. 页面配置与全宽样式 ---
 st.set_page_config(page_title="神策 - 战略级联动推演系统", layout="wide")
 
 st.markdown("""
     <style>
-    /* 强制主容器 100% 全宽，杜绝侧边空白 */
-    .block-container { max-width: 98% !important; padding: 2rem 1% !important; }
-    
-    /* 连锁反应路径 - 垂直全宽 */
+    .block-container { max-width: 98% !important; padding: 1.5rem 1% !important; }
     .logic-box { 
-        background-color: #f1f3f9; padding: 30px; border-left: 12px solid #673ab7; 
-        border-radius: 10px; margin: 25px 0; width: 100%; font-size: 1.2rem; 
-        line-height: 1.7; font-family: 'Courier New', monospace; color: #1a1a1a;
+        background-color: #f1f3f9; padding: 25px; border-left: 10px solid #673ab7; 
+        border-radius: 8px; margin: 20px 0; font-size: 1.1rem; line-height: 1.6;
     }
-    
-    /* 角色卡片并列显示 */
-    .role-card { padding: 25px; border-radius: 12px; min-height: 450px; box-shadow: 0 8px 20px rgba(0,0,0,0.1); margin-bottom: 25px; border: 1px solid #e0e0e0; }
-    .role-official { background-color: #f0f7ff; border-top: 10px solid #0056b3; }
-    .role-citizen { background-color: #fff9e6; border-top: 10px solid #ffcc00; }
-    .role-media { background-color: #f2fff2; border-top: 10px solid #28a745; }
-    .role-risk { background-color: #fff2f2; border-top: 10px solid #dc3545; }
-    
-    /* 深度研判报告 - 置底巨幕卡片 */
+    .role-card { padding: 20px; border-radius: 12px; min-height: 450px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); margin-bottom: 20px; border: 1px solid #eef0f2; }
+    .role-official { background-color: #f0f7ff; border-top: 8px solid #0056b3; }
+    .role-citizen { background-color: #fff9e6; border-top: 8px solid #ffcc00; }
+    .role-media { background-color: #f2fff2; border-top: 8px solid #28a745; }
+    .role-risk { background-color: #fff2f2; border-top: 8px solid #dc3545; }
     .report-card { 
-        background-color: #ffffff; padding: 50px; border-radius: 20px; 
-        border: 1px solid #d1d9e6; border-top: 20px solid #0056b3; 
-        box-shadow: 0 15px 50px rgba(0,0,0,0.1); margin-top: 40px; width: 100%; 
+        background-color: #ffffff; padding: 40px; border-radius: 15px; border: 1px solid #d1d9e6; 
+        border-top: 15px solid #0056b3; box-shadow: 0 10px 30px rgba(0,0,0,0.1); width: 100%; 
     }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 核心 API 配置 (已填入你指定的正确 Key) ---
+# --- 2. 侧边栏：核心控制面板 ---
+with st.sidebar:
+    st.header("⚙️ 推演控制中心")
+    
+    st.subheader("🤖 模型配置")
+    model_choice = st.selectbox("选择仿真大脑", ["gpt-4o", "gpt-4o-mini"], index=0)
+    temperature = st.slider("推演随机性 (Temperature)", 0.0, 1.0, 0.7)
+    
+    st.divider()
+    
+    st.subheader("📊 社会系统初始状态")
+    init_eff = st.slider("初始行政效能", 0, 100, 80)
+    init_panic = st.slider("初始民众焦虑", 0, 100, 30)
+    init_res = st.slider("初始资源储备", 0, 100, 90)
+    
+    st.divider()
+    
+    st.subheader("🛡️ 仿真深度开关")
+    enable_serper = st.toggle("开启真实历史实证 (Serper)", value=True)
+    strict_logic = st.toggle("强制物理环境约束 (断网/断电)", value=True)
+    
+    if st.button("🗑️ 清除推演历史"):
+        st.cache_data.clear()
+        st.rerun()
+
+# --- 3. 核心 API 配置 ---
 SECRET_KEY = "sk-LMB9VBTefa210eFC3581T3BLbkFJB0a3Bc8553a8406eb3B3"
 BASE_URL = "https://api.ohmygpt.com/v1"
-# 你的 Serper Key：d57fbcfd2ecd16f71b9b131984050fab2c64d707
 SERPER_API_KEY = "d57fbcfd2ecd16f71b9b131984050fab2c64d707" 
 
 client = OpenAI(api_key=SECRET_KEY, base_url=BASE_URL)
 
-# --- 3. 实证数据获取模块 ---
+# --- 4. 功能函数 ---
 def fetch_real_world_evidence(query):
-    """基于 Serper 搜索真实历史灾难案例，为推演提供事实基石"""
+    if not enable_serper:
+        return "实证检索已关闭，基于通用社会学模型推演。"
     search_url = "https://google.serper.dev/search"
     headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
-    # 强制搜索历史真实反应：抢购、断水、骚乱、信号中断、政府管制失败
-    payload = json.dumps({"q": f"{query} 历史案例 真实表现 群众行为 骚乱 抢购 官方对策", "num": 8})
+    payload = json.dumps({"q": f"{query} 历史案例 真实表现 群众行为 骚乱 抢购 处置教训", "num": 8})
     try:
         response = requests.post(search_url, headers=headers, data=payload, timeout=15)
         results = response.json().get('organic', [])
-        evidence = "\n".join([f"【实证数据点】: {r.get('snippet')}" for r in results])
-        return evidence if evidence else "未检索到直接实证，启用极端社会学模拟逻辑。"
-    except Exception as e:
-        return f"实证检索异常: {str(e)}。已切换至高保真预设推演模型。"
+        return "\n".join([f"【历史实证】: {r.get('snippet')}" for r in results])
+    except:
+        return "联网检索失败，启用离线高保真模拟。"
 
-# --- 4. 主流程逻辑 ---
-st.title("🔮 SHENCE (神策) | 实证数据驱动·极端环境仿真推演")
-event_input = st.text_area("📡 仿真目标输入", placeholder="如：千万人口城市大规模停电超过24小时，请基于真实案例事实进行仿真...", height=100)
+# --- 5. 主流程界面 ---
+st.title("🔮 SHENCE (神策) | 极端环境仿真推演平台")
+event_input = st.text_area("📡 仿真目标输入", placeholder="输入极端事件（如：超大城市供水系统遭网络攻击瘫痪48小时）...", height=100)
 
-if st.button("🚀 启动实证驱动仿真推演"):
+if st.button("🚀 启动全维度深度推演"):
     if event_input:
-        with st.status("🛠️ 正在执行实证数据抓取与逻辑校准...", expanded=True) as status:
+        with st.status("🛠️ 正在初始化仿真环境...", expanded=True) as status:
             
-            # 1. 抓取真实案例
-            st.write("🌐 联网检索全球历史相似案例事实...")
+            # 1. 抓取实证
+            st.write("🌐 联网提取历史相似案例规律...")
             facts = fetch_real_world_evidence(event_input)
             
-            # 2. 注入逻辑防御与实证指令
+            # 2. 构建逻辑约束 (带侧边栏初始值)
             logic_guard = f"""
-            推演基石：以下是检索到的真实历史数据点：
-            {facts}
+            推演基石：以下是检索到的真实历史数据点：{facts}
+            当前系统初始状态：行政效能{init_eff}，民众焦虑{init_panic}，资源储备{init_res}。
             
-            【逻辑防御指令】：
-            - 物理环境：严禁使用受损资源（停电即禁止网络支付、线上收集意见）。
-            - 民众行为：必须体现出真实的历史惨况（如高层住户断水、冰箱食物变质导致的社会焦虑、线下抢购）。
-            - 仿真深度：禁止给出‘官方口吻’的温和建议，必须展示真实的社会撕裂和治理难题。
+            【逻辑约束】：
+            - {'强制物理环境约束：严禁使用受损资源（如断电场景禁止APP办公）。' if strict_logic else '常规环境约束。'}
+            - 仿真深度：体现马斯洛生存底层需求，拒绝温和口吻，展示真实治理难题。
             """
 
             # 3. 生成趋势数据
             st.write("📊 正在量化社会稳定性变动指标...")
             res_data = client.chat.completions.create(
                 model="gpt-4o-mini", 
-                messages=[{"role":"system","content":logic_guard},{"role":"user","content":"输出T0,24,72,7d四阶段JSON数据"}],
+                messages=[{"role":"system","content":logic_guard},{"role":"user","content":"输出T0,24,72,7d四阶段JSON数据：[管控压力, 焦虑度, 匮乏率, 风险指]"}],
                 response_format={"type":"json_object"}
             ).choices[0].message.content
             time_data = json.loads(res_data)
 
-            # 4. 多角色博弈推演
-            st.write("🔄 激活多主体博弈仿真（基于实证规律）...")
+            # 4. 多角色博弈
+            st.write("🔄 激活多主体博弈仿真...")
             def sim_role(role_name, prompt):
-                return client.chat.completions.create(model="gpt-4o", messages=[
-                    {"role": "system", "content": f"你是{role_name}。环境背景：{logic_guard}"},
-                    {"role": "user", "content": prompt}
-                ]).choices[0].message.content
+                return client.chat.completions.create(
+                    model=model_choice, 
+                    messages=[{"role": "system", "content": f"你是{role_name}。{logic_guard}"},{"role":"user","content":prompt}],
+                    temperature=temperature
+                ).choices[0].message.content
 
-            off = sim_role("应急指挥部", f"针对{event_input}提出强制物理管控手段。")
-            cit = sim_role("真实受灾民众", f"描述停电24小时后的生存危机。记住历史实证：{facts}")
-            med = sim_role("口头信息流传播者", f"描述通讯黑洞中谣言如何引发群体行为。")
-            rsk = sim_role("逻辑审计官", f"基于物理常识和实证数据，无情地修正上述推演中的‘幻觉’对策。")
+            off = sim_role("应急指挥部", f"针对{event_input}提出管控手段。")
+            cit = sim_role("受灾民众", f"描述生存24小时后的真实反应。")
+            med = sim_role("信息流传播者", f"描述通讯黑洞中的谣言演化。")
+            rsk = sim_role("逻辑审计官", f"指出以上推演中不切实际的幻觉部分。")
 
-            path_code = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"user","content":f"基于{facts}生成连锁反应链条"}]).choices[0].message.content
-            status.update(label="✅ 仿真建模完成：已对齐历史事实", state="complete")
+            path_code = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"user","content":f"基于{facts}生成此事件的连锁反应路径"}]).choices[0].message.content
+            status.update(label="✅ 仿真建模完成", state="complete")
 
-        # --- 第一部分：指标趋势 (垂直全宽) ---
-        st.markdown("### 📈 社会风险趋势预测 (基于实证权重)")
+        # --- 第一部分：指标趋势 ---
+        st.markdown("### 📈 社会风险趋势预测")
         fig = go.Figure()
         names = ['管控压力', '民众焦虑度', '资源匮乏率', '社会秩序风险']
         for i in range(4):
+            # 提取数据点
             y = [time_data.get('T0',[50]*4)[i], time_data.get('T24',[60]*4)[i], time_data.get('T72',[70]*4)[i], time_data.get('T7d',[80]*4)[i]]
             fig.add_trace(go.Scatter(x=['当前','24h','72h','7d'], y=y, name=names[i], line=dict(width=6)))
+        fig.update_layout(height=400, margin=dict(l=20, r=20, t=20, b=20))
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- 第二部分：因果逻辑链 (垂直全宽) ---
-        st.markdown("### 🔗 连锁反应路径 (次生灾害链条)")
+        # --- 第二部分：因果逻辑链 ---
+        st.markdown("### 🔗 连锁反应路径")
         st.markdown(f"<div class='logic-box'>{path_code.replace('->', ' ➔ ')}</div>", unsafe_allow_html=True)
 
-        # --- 第三部分：核心对策 (垂直全宽) ---
-        st.markdown("### 💡 核心对策推荐 (基于实证处置经验)")
-        strat = client.chat.completions.create(model="gpt-4o", messages=[{"role":"system","content":logic_guard},{"role":"user","content":"给出3条不依赖网络的硬核处置对策。"}]).choices[0].message.content
-        st.info(strat)
+        # --- 第三部分：核心对策 ---
+        st.markdown("### 💡 核心对策推荐")
+        strat = client.chat.completions.create(model=model_choice, messages=[{"role":"system","content":logic_guard},{"role":"user","content":"给出3条基于物理事实的硬核处置对策。"}]).choices[0].message.content
+        st.success(strat)
 
-        # --- 第四部分：四角色深度博弈 (四列并排) ---
+        # --- 第四部分：四角色博弈 ---
         st.divider()
-        st.markdown("### 🔄 智能体多维博弈回溯 (强仿真版)")
+        st.markdown("### 🔄 智能体多维博弈回溯")
         c1, c2, c3, c4 = st.columns(4)
         with c1: st.markdown(f"<div class='role-card role-official'><b>🏛️ 官方决策</b><br><br>{off}</div>", unsafe_allow_html=True)
         with c2: st.markdown(f"<div class='role-card role-citizen'><b>⚠️ 民众反应</b><br><br>{cit}</div>", unsafe_allow_html=True)
         with c3: st.markdown(f"<div class='role-card role-media'><b>📢 舆论态势</b><br><br>{med}</div>", unsafe_allow_html=True)
         with c4: st.markdown(f"<div class='role-card role-risk'><b>🛡️ 逻辑审计</b><br><br>{rsk}</div>", unsafe_allow_html=True)
 
-        # --- 第五部分：全维度深度研判报告 (置底大卡片) ---
+        # --- 第五部分：深度研判报告 ---
         st.divider()
-        report_prompt = f"基于实证数据：{facts}。为{event_input}撰写深度研判报告。要求：1.物理瘫痪分析；2.社会稳定拐点预警；3.硬核物理应对建议。"
-        final_report = client.chat.completions.create(model="gpt-4o", messages=[{"role":"system","content":"资深国家安全专家"},{"role":"user","content":report_prompt}]).choices[0].message.content
-        st.markdown(f"<div class='report-card'><h2>📝 全维度深度综合研判报告 (实证驱动)</h2><br>{final_report}</div>", unsafe_allow_html=True)
+        report_prompt = f"基于实证数据：{facts}。为{event_input}撰写深度研判报告。要求：1.物理瘫痪分析；2.社会稳定拐点预警；3.战略应对建议。"
+        final_report = client.chat.completions.create(model=model_choice, messages=[{"role":"system","content":"国家安全专家"},{"role":"user","content":report_prompt}]).choices[0].message.content
+        st.markdown(f"<div class='report-card'><h2>📝 全维度深度综合研判报告</h2><br>{final_report}</div>", unsafe_allow_html=True)
 
 else:
-    st.info("💡 请调节侧边栏变量并输入仿真目标。系统将根据你提供的 Key 检索真实历史数据。")
+    st.info("💡 请在左侧侧边栏配置仿真参数，并在上方输入框输入仿真目标。")
