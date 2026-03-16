@@ -4,16 +4,18 @@ import requests
 import json
 import plotly.graph_objects as go
 import pandas as pd
-from datetime import datetime
+import numpy as np
+from datetime import datetime, timedelta
 
-# --- 1. 页面设置 ---
-st.set_page_config(page_title="神策 - 高保真推演系统", layout="wide")
+# --- 1. 页面配置 ---
+st.set_page_config(page_title="神策 - 时间轴动态推演沙盘", layout="wide")
 
-# 科技感 CSS
+# 深度科技感 CSS
 st.markdown("""
     <style>
-    .main { background-color: #0e1117; color: #ffffff; }
-    .stMetric { background-color: #161b22; border: 1px solid #30363d; padding: 10px; border-radius: 5px; }
+    .main { background-color: #0b0e14; color: #ffffff; }
+    .stMetric { background: linear-gradient(135deg, #161b22 0%, #0d1117 100%); border: 1px solid #30363d; padding: 15px; border-radius: 10px; }
+    .time-node { color: #00ffcc; font-weight: bold; border-left: 3px solid #00ffcc; padding-left: 10px; margin-top: 20px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -25,103 +27,102 @@ client = OpenAI(api_key=DEEPSEEK_K, base_url="https://api.deepseek.com")
 # --- 3. 核心功能函数 ---
 def fetch_intelligence(query):
     url = "https://google.serper.dev/search"
-    search_query = f"{query} 政策影响 现状 评价"
-    payload = json.dumps({"q": search_query, "gl": "cn", "hl": "zh-cn", "num": 8})
+    payload = json.dumps({"q": f"{query} 动态 趋势 预测", "gl": "cn", "hl": "zh-cn", "num": 10})
     headers = {'X-API-KEY': SERPER_K, 'Content-Type': 'application/json'}
     try:
         res = requests.post(url, headers=headers, data=payload)
         return "\n".join([item.get('snippet') for item in res.json().get('organic', [])])
-    except:
-        return "数据采集受限。"
+    except: return "数据采集受限。"
 
-def agent_quant_call(role_prompt, event, context):
+def agent_time_series_call(event, context):
     """
-    要求 AI 输出固定格式：[分数] + 理由
+    核心指令：要求 AI 生成 T+24h, T+72h, T+7d 的量化数值 JSON
+    """
+    prompt = f"""
+    你是一个高保真时空推演引擎。请针对以下事件进行“时间轴演化推演”。
+    
+    【事件】: {event}
+    【情报】: {context}
+    
+    请输出三个阶段的研判，每阶段必须包含：
+    1. 官方压力、民众情绪、舆论热度、失稳风险 四个维度的分值（0-100）。
+    2. 简要的情势描述。
+    
+    输出格式要求为严格的 JSON 字符串，以便系统解析，格式如下：
+    {{
+      "T24": {{"scores": [官方, 民众, 媒体, 风险], "desc": "..."}},
+      "T72": {{"scores": [官方, 民众, 媒体, 风险], "desc": "..."}},
+      "T7d": {{"scores": [官方, 民众, 媒体, 风险], "desc": "..."}}
+    }}
     """
     response = client.chat.completions.create(
         model="deepseek-chat",
-        messages=[
-            {"role": "system", "content": f"你是一个量化研判专家。{role_prompt}。注意：你必须在回复的第一行首先给出当前维度的“压力分值”（0-100，分数越高代表压力或冲突越大），格式必须为：【分值：XX】。"},
-            {"role": "user", "content": f"情报：{context}\n事件：{event}"}
-        ],
+        messages=[{"role": "system", "content": "你是一个只输出JSON的推演引擎。"},
+                  {"role": "user", "content": prompt}],
         temperature=0.3
     )
-    content = response.choices[0].message.content
-    # 简单的分值提取逻辑
-    try:
-        score_str = content.split('】')[0].split('：')[1]
-        score = int(''.join(filter(str.isdigit, score_str)))
-    except:
-        score = 50 # 默认兜底分
-    return score, content
+    return json.loads(response.choices[0].message.content)
 
 # --- 4. 界面设计 ---
-st.title("🔮 SHENCE (神策) | 高保真量化推演沙盘")
-event_input = st.text_area("📡 输入研判目标", placeholder="输入事件，系统将自动进行量化建模...")
+st.title("🔮 SHENCE (神策) | 时间轴动态推演沙盘")
+event_input = st.text_area("📡 输入研判目标", placeholder="例如：某项新税收政策颁布后的社会反应演化...")
 
-if st.button("🚀 启动高保真推演"):
+if st.button("🚀 开启跨时空全维度推演"):
     if event_input:
-        with st.spinner("🕵️ 正在采集情报并进行数值建模..."):
+        with st.spinner("⏳ 正在构建时间轴沙盘，计算逻辑熵..."):
             intel = fetch_intelligence(event_input)
+            data = agent_time_series_call(event_input, intel)
             
-            # 执行四个维度的量化推演
-            s1, res1 = agent_quant_call("模拟官方，推演决策压力", event_input, intel)
-            s2, res2 = agent_quant_call("模拟民众，推演心理负荷与抵触感", event_input, intel)
-            s3, res3 = agent_quant_call("模拟媒体，推演舆论热度与敏感度", event_input, intel)
-            s4, res4 = agent_quant_call("模拟风险，推演社会失稳可能性", event_input, intel)
+            # --- 整理数据用于图表 ---
+            time_labels = ['初始态 (T+0)', '爆发期 (T+24h)', '博弈期 (T+72h)', '平稳期 (T+7d)']
+            # 初始状态设为 50 基准或根据 T24 略微下调
+            off_scores = [40, data['T24']['scores'][0], data['T72']['scores'][0], data['T7d']['scores'][0]]
+            cit_scores = [30, data['T24']['scores'][1], data['T72']['scores'][1], data['T7d']['scores'][1]]
+            med_scores = [20, data['T24']['scores'][2], data['T72']['scores'][2], data['T7d']['scores'][2]]
+            rsk_scores = [10, data['T24']['scores'][3], data['T72']['scores'][3], data['T7d']['scores'][3]]
 
-        # --- 第一部分：量化指标卡 ---
-        st.markdown("### 📊 维度实时压力指标")
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("官方决策压力", f"{s1}%", delta="行政负荷")
-        m2.metric("民众心理负荷", f"{s2}%", delta="情绪波幅")
-        m3.metric("舆论敏感度", f"{s3}%", delta="传播速率")
-        m4.metric("失稳风险值", f"{s4}%", delta="预警级别", delta_color="inverse")
-
-        # --- 第二部分：四角色研判详情 ---
-        st.markdown("---")
-        c1, c2, c3, c4 = st.columns(4)
-        with c1: st.info(f"**🏛️ 官方**\n\n{res1}")
-        with c2: st.success(f"**👥 民众**\n\n{res2}")
-        with c3: st.warning(f"**📰 媒体**\n\n{res3}")
-        with c4: st.error(f"**🛡️ 风险**\n\n{res4}")
-
-        # --- 第三部分：动态风险指数图 ---
-        st.markdown("---")
-        st.markdown("### 📈 社会稳定风险指数推演图")
-        
-        # 模拟一个随时间轴变化的趋势（当前时刻为中间点）
-        # 这里展示各维度的对比折线
-        chart_data = pd.DataFrame({
-            '维度': ['官方', '民众', '媒体', '整体风险'],
-            '当前压力值': [s1, s2, s3, s4]
-        })
-        
+        # --- 第一部分：动态趋势曲线 ---
+        st.markdown("### 📈 社会稳定风险演化趋势")
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=chart_data['维度'], y=chart_data['当前压力值'], 
-                                 mode='lines+markers', name='当前态势',
-                                 line=dict(color='#00ffcc', width=4),
-                                 marker=dict(size=10)))
+        fig.add_trace(go.Scatter(x=time_labels, y=off_scores, name='官方压力', line=dict(color='#3498db', width=3)))
+        fig.add_trace(go.Scatter(x=time_labels, y=cit_scores, name='民众情绪', line=dict(color='#e74c3c', width=3)))
+        fig.add_trace(go.Scatter(x=time_labels, y=med_scores, name='舆论热度', line=dict(color='#f1c40f', width=3)))
+        fig.add_trace(go.Scatter(x=time_labels, y=rsk_scores, name='整体风险', line=dict(color='#00ffcc', width=5, dash='dot')))
         
-        fig.update_layout(
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
-            font_color="white",
-            yaxis=dict(range=[0, 100], gridcolor='#30363d'),
-            xaxis=dict(gridcolor='#30363d'),
-            title="多维博弈平衡点分析"
-        )
+        fig.update_layout(height=500, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color="white",
+                          yaxis=dict(title="压力指数 (0-100)", range=[0, 105], gridcolor='#30363d'),
+                          xaxis=dict(gridcolor='#30363d'))
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- 第四部分：深度研判报告与下载 ---
-        st.markdown("### 📝 深度全维度综合研判结论")
-        final_p = f"综合以下量化分值（官方{s1}, 民众{s2}, 媒体{s3}, 风险{s4}），出一份深度的、具备战略高度的研判报告。"
+        # --- 第二部分：四列角色深度研判 ---
+        st.markdown("---")
+        st.markdown("### 🖥️ 关键节点状态扫描")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown("<div class='time-node'>T+24h: 爆发期</div>", unsafe_allow_html=True)
+            st.write(data['T24']['desc'])
+        with c2:
+            st.markdown("<div class='time-node'>T+72h: 博弈期</div>", unsafe_allow_html=True)
+            st.write(data['T72']['desc'])
+        with c3:
+            st.markdown("<div class='time-node'>T+7d: 转折/平稳期</div>", unsafe_allow_html=True)
+            st.write(data['T7d']['desc'])
+
+        # --- 第三部分：深度综合报告 ---
+        st.markdown("---")
+        st.markdown("### 📝 全维度综合推演报告")
+        final_prompt = f"根据时间轴数据：{data}，为事件【{event_input}】编写一份深度的、具有未来视角的战略综合研判报告，字数800字左右。"
         final_res = client.chat.completions.create(
             model="deepseek-chat",
-            messages=[{"role": "user", "content": f"{final_p}\n情报：{intel}"}],
+            messages=[{"role": "user", "content": final_prompt}],
             temperature=0.4
         ).choices[0].message.content
         
-        st.markdown(f"<div style='background-color:#161b22; padding:20px; border-left:5px solid #00ffcc;'>{final_res}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='background-color:#161b22; padding:25px; border-radius:10px; border:1px solid #00ffcc; line-height:1.6;'>{final_res}</div>", unsafe_allow_html=True)
         
-        st.download_button("📥 点击下载完整高保真研判报告", final_res, file_name="神策高保真报告.txt")
+        # 下载
+        st.download_button("📥 导出全维度高保真研判报告", final_res, file_name=f"神策推演_{datetime.now().strftime('%Y%m%d')}.txt")
+
+        # 隐藏的原始依据
+        with st.expander("🔗 查看底层情报来源"):
+            st.text(intel)
