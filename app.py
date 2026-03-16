@@ -1,176 +1,358 @@
 import streamlit as st
 from openai import OpenAI
-import requests
 import json
 import plotly.graph_objects as go
-import re
+import requests
+import random
+from datetime import datetime
+import pandas as pd
+from fpdf import FPDF
+import io
+import time
 
-# --- 1. 界面与专业样式配置 ---
-st.set_page_config(page_title="神策 - 战略级联动推演系统", layout="wide")
-
+# --- 页面配置 ---
+st.set_page_config(page_title="SHENCE 3.0 | 社会演化仿真旗舰版", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""
-    <style>
-    .main { background-color: #f4f7f9; }
-    /* 功能 6: 四角色彩色卡片 */
-    .role-card { padding: 18px; border-radius: 12px; margin-bottom: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
-    .role-official { background-color: #e3f2fd; border-left: 5px solid #1565c0; color: #0d47a1; }
-    .role-citizen { background-color: #e8f5e9; border-left: 5px solid #2e7d32; color: #1b5e20; }
-    .role-media { background-color: #fff3e0; border-left: 5px solid #ef6c00; color: #e65100; }
-    .role-risk { background-color: #fce4ec; border-left: 5px solid #c2185b; color: #880e4f; }
-    /* 功能 7: 逻辑链条解析框 */
-    .logic-box { background-color: #ffffff; padding: 15px; border: 1px dashed #673ab7; border-radius: 10px; font-family: monospace; }
-    /* 侧边栏指示灯 */
-    .status-dot { height: 10px; width: 10px; border-radius: 50%; display: inline-block; margin-right: 5px; }
-    .dot-green { background-color: #28a745; }
-    .dot-blue { background-color: #007bff; }
-    .dot-orange { background-color: #fd7e14; }
-    /* 全维度研判报告卡片 */
-    .report-card { background-color: #ffffff; padding: 35px; border-radius: 20px; border: 3px solid #1565c0; box-shadow: 0 15px 45px rgba(0,0,0,0.15); margin-top: 30px; line-height: 1.8; }
-    .report-header { color: #1565c0; border-bottom: 2px solid #1565c0; padding-bottom: 10px; margin-bottom: 20px; }
-    </style>
-    """, unsafe_allow_html=True)
+<style>
+.block-container { max-width: 98% !important; padding: 1rem 2% !important; background-color: #0e1117; }
+.stMarkdown, p, h3, h2, h1 { color: #e0e0e0 !important; }
+.metric-card { 
+    background-color: #161b22; padding: 20px; border-radius: 10px; 
+    border: 1px solid #30363d; text-align: center;
+}
+.logic-box { 
+    background-color: #0d1117; padding: 25px; border-left: 10px solid #58a6ff; 
+    border-radius: 6px; margin: 20px 0; font-family: 'Consolas', monospace; 
+    color: #8b949e; border: 1px solid #30363d;
+}
+.report-card { 
+    background-color: #ffffff; padding: 40px; border-radius: 15px; color: #1a1a1a !important;
+    border-top: 15px solid #1f6feb; box-shadow: 0 10px 40px rgba(0,0,0,0.5); 
+}
+.agent-card {
+    background-color: #161b22; padding:15px; border-radius:10px; min-height:260px;
+    border:1px solid #30363d; margin-bottom:10px;
+}
+.resource-card {
+    background-color: #161b22; padding:15px; border-radius:10px;
+    border:1px solid #30363d; margin-bottom:10px;
+}
+</style>
+""", unsafe_allow_html=True)
 
-# --- 2. 核心密钥配置 ---
-SECRET_KEY = "sk-LMB9VBTefa210eFC3581T3BLbkFJB0a3Bc8553a8406eb3B3"
-BASE_URL = "https://api.ohmygpt.com/v1"
-client = OpenAI(api_key=SECRET_KEY, base_url=BASE_URL)
+# --- 侧边栏 API ---
+st.sidebar.header("🔑 API 配置")
+openai_key = st.sidebar.text_input("OpenAI API Key", type="password")
+base_url = st.sidebar.text_input("Base URL", value="https://api.ohmygpt.com/v1")
+serper_key = st.sidebar.text_input("Serper API Key", type="password")
 
-try:
-    SERPER_K = st.secrets["SERPER_API_KEY"]
-except:
-    st.error("❌ 缺少 SERPER_API_KEY，请在 Secrets 中配置。")
-    st.stop()
+client = None
+if openai_key:
+    client = OpenAI(api_key=openai_key, base_url=base_url)
 
-# --- 3. 侧边栏 (严格对照 8 项功能，滑块第一优先级常驻) ---
-with st.sidebar:
-    st.title("🛡️ 系统监控面板")
-    
-    # 【功能 1: 模型展示指示灯】
-    st.markdown("### 当前调度模型")
-    st.markdown('<div style="background-color:#e8f5e9;padding:10px;border-radius:5px;margin-bottom:5px;"><span class="status-dot dot-green"></span> 逻辑大脑: GPT-4o</div>', unsafe_allow_html=True)
-    st.markdown('<div style="background-color:#e3f2fd;padding:10px;border-radius:5px;margin-bottom:5px;"><span class="status-dot dot-blue"></span> 量化引擎: GPT-4o-mini</div>', unsafe_allow_html=True)
-    st.markdown('<div style="background-color:#fffde7;padding:10px;border-radius:5px;margin-bottom:10px;"><span class="status-dot dot-orange"></span> 搜索插件: Serper Global</div>', unsafe_allow_html=True)
-    
-    st.divider()
+# --- 会话状态 ---
+init_keys = [
+    "event", "facts", "matrix_history", "timeline", "report",
+    "agents", "resources", "swan", "causal_chain", "playback_index"
+]
+for k in init_keys:
+    if k not in st.session_state:
+        st.session_state[k] = [] if k in ["timeline", "matrix_history"] else ""
 
-    # 【功能 2: 三个变量滑块 - 强制常驻】
-    st.subheader("⚙️ 仿真参数注入")
-    v_control = st.slider("⚖️ 官方干预力度", 0, 100, 50)
-    v_media = st.slider("📢 舆论开放程度", 0, 100, 50)
-    v_fund = st.slider("💰 资源保障投入", 0, 100, 30)
-    
-    st.divider()
-    
-    # 【功能 3: Trace Logs 动态显示】
-    st.write("**实时调度流 (Trace Logs):**")
-    log_stream = st.empty()
-    log_stream.code("READY: 系统就绪\nWAITING: 等待事件输入...")
-    
-    st.divider()
-    
-    # 【功能 4: 自检与重启按钮】
-    c_btn1, c_btn2 = st.columns(2)
-    with c_btn1:
-        if st.button("🔌 链路自检"):
-            try:
-                client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"user","content":"hi"}], max_tokens=5)
-                st.sidebar.success("正常")
-            except: st.sidebar.error("异常")
-    with c_btn2:
-        if st.button("🔄 重启引擎"): st.rerun()
+st.session_state.playback_index = 0
 
-# --- 4. 核心功能函数 ---
-def get_logic_path(event):
-    """【功能 7】逻辑链条解析"""
-    prompt = f"针对【{event}】，生成简短因果链条（A -> B -> C）。只输出代码。"
+# --- 核心工具函数 ---
+def safe_json(res):
     try:
-        res = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"user","content":prompt}])
-        return res.choices[0].message.content
-    except: return "数据计算中..."
+        return json.loads(res)
+    except:
+        fixed = res[res.find("{"):res.rfind("}")+1]
+        try:
+            return json.loads(fixed)
+        except:
+            return {
+                "official": "数据异常", "citizen": "数据异常",
+                "media": "数据异常", "audit": "数据异常"
+            }
 
-# --- 5. 主页面逻辑 ---
-st.title("🔮 SHENCE (神策) | 多模态博弈推演沙盘")
-event_input = st.text_area("📡 目标事件输入", placeholder="在此输入研判目标，调节左侧变量后启动...", height=100)
+def get_evidence(q):
+    if not serper_key:
+        return "离线仿真模式"
+    try:
+        r = requests.post("https://google.serper.dev/search",
+            headers={"X-API-KEY": serper_key, "Content-Type": "application/json"},
+            json={"q": f"{q} 社会演化 历史案例 危机应对 PESTEL", "num": 8}, timeout=12)
+        return "\n".join([x.get("snippet","") for x in r.json().get("organic", [])])
+    except:
+        return "实证检索失败，使用内部模型"
 
-if st.button("🚀 启动全维度深度推演"):
-    if event_input:
-        log_stream.code(f"INIT: 引擎启动\nVAR: 注入参数({v_control}, {v_media}, {v_fund})")
-        
-        with st.status("🛠️ 系统正在进行深度建模与角色博弈...", expanded=True) as status:
-            # 1. 联网情报获取
-            st.write("🌐 检索全球 OSINT 情报...")
-            intel_res = requests.post("https://google.serper.dev/search", json={"q": event_input}, headers={'X-API-KEY': SERPER_K}).json()
-            log_stream.code("FETCH: 联网情报同步完成")
+def init_state(event, facts):
+    prompt = f"事件：{event}\n事实：{facts}\n返回JSON（0-100）：行政效能、焦虑指数、资源缺口、动荡风险"
+    res = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"user","content":prompt}], response_format={"type":"json_object"})
+    return safe_json(res.choices[0].message.content)
 
-            # 2. 量化数据分析 (功能 5)
-            st.write("📈 构建动态演化模型...")
-            d_prompt = f"事件:{event_input}。变量:干预={v_control},舆论={v_media},资金={v_fund}。输出JSON:{{\"T0\":[..],\"T24\":[..],\"T72\":[..],\"T7d\":[..]}}"
-            res_data = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"user","content":d_prompt}])
-            time_data = json.loads(re.search(r'(\{.*\})', res_data.choices[0].message.content, re.DOTALL).group(1))
+def init_resources():
+    return {
+        "警力": random.randint(60,95), "医疗": random.randint(50,90),
+        "物资": random.randint(30,85), "电力": random.randint(20,70),
+        "通信": random.randint(40,90), "交通": random.randint(30,80)
+    }
 
-            # 3. 逻辑路径 (功能 7)
-            path_code = get_logic_path(event_input)
+def evolve_step(event, facts, matrix, step, intervention, resources):
+    prompt = f"""
+事件：{event}
+实证：{facts}
+社会状态：{matrix}
+资源状态：{resources}
+干预措施：{intervention}
+第{step}阶段演化。
+严格返回JSON：official、citizen、media、audit（详细专业）
+"""
+    res = client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":prompt}], response_format={"type":"json_object"}, timeout=30)
+    return safe_json(res.choices[0].message.content)
 
-            # 4. 多智能体博弈 (功能 6)
-            st.write("🔄 激活多主体博弈对撞...")
-            off = client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":f"强度{v_control}下官方对策？"}]).choices[0].message.content
-            log_stream.code("AGENT: 官方决策完成")
-            cit = client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":f"民众反馈？"}]).choices[0].message.content
-            log_stream.code("AGENT: 民众反应完成")
-            med = client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":f"媒体定调？"}]).choices[0].message.content
-            rsk = client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":f"风险研判？"}]).choices[0].message.content
-            log_stream.code("DONE: 流程仿真结束")
-            
-            status.update(label="✅ 推演完成", state="complete")
+def update_state(old, evo, intervention):
+    adj = {
+        "无": (-3,5,-2,6),
+        "紧急物资投放": (-2,-5,10,-4),
+        "媒体安抚": (-1,-10,2,-3),
+        "加强安保": (4,2,-5,-8),
+        "全城宵禁": (6,-8,-3,-10),
+        "电力抢修": (8,0,-5,2)
+    }
+    a,b,c,d = adj[intervention]
+    return {
+        "行政效能": max(0, min(100, old["行政效能"] + a + random.randint(-2,3))),
+        "焦虑指数": max(0, min(100, old["焦虑指数"] + b + random.randint(-4,6))),
+        "资源缺口": max(0, min(100, old["资源缺口"] + c + random.randint(-3,5))),
+        "动荡风险": max(0, min(100, old["动荡风险"] + d + random.randint(-3,7)))
+    }
 
-        # --- 展示区：趋势图与逻辑路径 ---
-        col_l, col_r = st.columns([3, 2])
-        with col_l:
-            st.markdown("### 📈 社会稳定风险演化趋势")
-            fig = go.Figure()
-            names, colors = ['官方压力', '民众情绪', '舆论热度', '整体风险'], ['#1565c0', '#2e7d32', '#ef6c00', '#c2185b']
-            for i in range(4):
-                try:
-                    y = [time_data['T0'][i], time_data['T24'][i], time_data['T72'][i], time_data['T7d'][i]]
-                    fig.add_trace(go.Scatter(x=['当前','24h','72h','7d'], y=y, name=names[i], line=dict(color=colors[i], width=4)))
-                except: continue
-            st.plotly_chart(fig, use_container_width=True)
-        with col_r:
-            st.markdown("### 🔗 连锁反应路径")
-            st.markdown(f"<div class='logic-box'>{path_code.replace('->', ' ➔ ')}</div>", unsafe_allow_html=True)
-            st.markdown("### 💡 实时对策推荐")
-            strat = client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":f"风险{time_data['T7d'][3]}。给出方案。"}]).choices[0].message.content
-            st.info(strat)
+def update_resources(res):
+    return {
+        k: max(0, min(100, v + random.randint(-8,6)))
+        for k,v in res.items()
+    }
 
-        # --- 展示区：彩色卡片 ---
-        st.markdown("---")
-        st.markdown("### 🔄 智能体实时博弈对撞回放")
-        cx, cy = st.columns(2)
-        with cx:
-            st.markdown(f"<div class='role-card role-official'><b>🏛️ 官方决策</b><br>{off}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div class='role-card role-citizen'><b>👥 民众反馈</b><br>{cit}</div>", unsafe_allow_html=True)
-        with cy:
-            st.markdown(f"<div class='role-card role-media'><b>📰 媒体定调</b><br>{med}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div class='role-card role-risk'><b>🛡️ 风险监测</b><br>{rsk}</div>", unsafe_allow_html=True)
+def gen_black_swan(event):
+    if random.random() < 0.3:
+        return "无黑天鹅事件"
+    prompt = f"{event} 背景下，生成低概率高冲击突发事件"
+    return client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":prompt}]).choices[0].message.content
 
-        # --- 【核心新增：深度综合研判报告】 ---
-        st.divider()
-        with st.spinner("🔍 正在撰写全维度深度研判报告..."):
-            report_p = f"""
-            基于以上博弈数据，撰写深度综合研判报告：
-            事件：{event_input}
-            数据：官方策略({off})，民众反馈({cit})，媒体倾向({med})，核心风险({rsk})。
-            
-            要求：
-            1. 必须覆盖政府稳态、民众诉求、媒体引导、社会平衡四个维度。
-            2. 提出符合现有国情和政策的平衡性对策。
-            3. 确保建议兼顾各方利益，具备极强实操性，解决社会各界矛盾。
-            4. 语气严谨，具备战略参考价值。
-            """
-            final_report = client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":report_p}]).choices[0].message.content
-            log_stream.code("REPORT: 综合研判报告已生成")
-            
-        st.markdown(f"<div class='report-card'><h2 class='report-header'>📝 全维度深度综合研判报告</h2>{final_report}</div>", unsafe_allow_html=True)
-        st.download_button("📥 导出全量仿真报告", final_report)
-else:
-    st.info("💡 系统已就绪。请调节左侧变量并输入事件启动深度推演。")
+def gen_causal(event):
+    prompt = f"为 {event} 生成PESTEL全维度因果链，结构化输出"
+    return client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"user","content":prompt}]).choices[0].message.content
+
+def gen_report(event, facts, timeline, swan, matrix, resources):
+    prompt = f"""
+你是国家级战略安全顾问，生成正式研判报告：
+事件：{event}
+实证：{facts}
+演化时序：{timeline}
+黑天鹅：{swan}
+社会状态：{matrix}
+资源状态：{resources}
+报告必须包含：
+1. 事件定级 2. 物理瘫痪分析 3. 社会临界点 4. 演化复盘 5. 风险预警 6. 干预建议 7. 结论
+"""
+    return client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":prompt}], timeout=60).choices[0].message.content
+
+def export_pdf(report):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    pdf.multi_cell(0, 10, report)
+    return bytes(pdf.output(dest='S'))
+
+# ---------------------- 主界面 ----------------------
+st.title("🛡️ SHENCE 3.0 | MiroFish 级社会演化仿真旗舰系统")
+
+# 场景模板
+templates = {
+    "城市断水断电48小时": "一线城市核心区域停电停水，通信不稳，恐慌抢购",
+    "粮食供应链中断7天": "粮食运输受阻，米面油库存下降，物价上涨",
+    "区域金融挤兑": "地方银行流动性危机，居民集中取现，支付承压",
+    "省级网络切断": "互联网出口中断，移动通信不稳，信息传播失控"
+}
+st.subheader("📋 快速场景模板")
+t_cols = st.columns(4)
+for i,(name,val) in enumerate(templates.items()):
+    if t_cols[i].button(f"🚨 {name}", use_container_width=True):
+        st.session_state.event = val
+
+# 事件输入
+event = st.text_area("📡 初始扰动事件", value=st.session_state.get("event",""), height=80)
+
+# 控制面板
+with st.expander("⚙️ 仿真控制面板", expanded=True):
+    c1,c2,c3 = st.columns(3)
+    with c1:
+        steps = st.slider("演化步数", 1, 8, 4)
+    with c2:
+        intervention = st.selectbox("🎯 官方干预策略", [
+            "无","紧急物资投放","媒体安抚","加强安保","全城宵禁","电力抢修"
+        ])
+    with c3:
+        enable_swan = st.checkbox("启用黑天鹅", value=True)
+
+# 启动按钮
+col_launch1, col_launch2 = st.columns([3,1])
+with col_launch1:
+    run = st.button("🚀 启动全流程仿真", type="primary", use_container_width=True)
+with col_launch2:
+    reset = st.button("🔁 重置仿真", use_container_width=True)
+
+if reset:
+    for k in st.session_state:
+        del st.session_state[k]
+    st.rerun()
+
+# ---------------------- 仿真运行 ----------------------
+if run and client and event:
+    with st.status("✅ 仿真启动中...", expanded=True) as s:
+        s.update(label="🌐 检索实证案例")
+        facts = get_evidence(event)
+        st.session_state.facts = facts
+
+        s.update(label="📊 初始化社会矩阵")
+        matrix = init_state(event, facts)
+        st.session_state.matrix_history = [matrix]
+
+        s.update(label="🚚 初始化资源调度系统")
+        resources = init_resources()
+        st.session_state.resources = [resources]
+
+        s.update(label="🔗 生成因果链")
+        chain = gen_causal(event)
+        st.session_state.causal_chain = chain
+
+        s.update(label="🦢 生成黑天鹅")
+        swan = gen_black_swan(event) if enable_swan else "无黑天鹅"
+        st.session_state.swan = swan
+
+        s.update(label=f"🔄 执行 {steps} 步演化")
+        timeline = []
+        for i in range(1, steps+1):
+            evo = evolve_step(event, facts, matrix, i, intervention, resources)
+            timeline.append({"step":i, "data":evo})
+            matrix = update_state(matrix, evo, intervention)
+            resources = update_resources(resources)
+            st.session_state.matrix_history.append(matrix)
+            st.session_state.resources.append(resources)
+            time.sleep(0.2)
+        st.session_state.timeline = timeline
+
+        s.update(label="📝 生成研判报告")
+        report = gen_report(event, facts, timeline, swan, matrix, resources)
+        st.session_state.report = report
+        s.update(label="✅ 仿真完成", state="complete")
+        st.success("仿真完成！")
+
+# ---------------------- 结果展示 ----------------------
+if st.session_state.timeline:
+    st.divider()
+    st.subheader("📺 实时态势总面板")
+
+    # 1. 状态指标
+    m = st.session_state.matrix_history[-1]
+    m_cols = st.columns(4)
+    labels = ["行政效能","焦虑指数","资源缺口","动荡风险"]
+    colors = ["#58a6ff","#f8c447","#f85149","#e34c26"]
+    for i,k in enumerate(labels):
+        m_cols[i].markdown(f"""
+<div class='metric-card'>
+{labels[i]}<br>
+<h2 style='color:{colors[i]}'>{m[k]}%</h2>
+</div>
+""", unsafe_allow_html=True)
+
+    # 2. 资源调度面板
+    st.subheader("🚚 资源与兵力调度面板")
+    r = st.session_state.resources[-1]
+    r_cols = st.columns(6)
+    r_keys = list(r.keys())
+    for i,k in enumerate(r_keys):
+        r_cols[i].markdown(f"""
+<div class='resource-card'>
+{list(r.keys())[i]}<br>
+<h3>{r[k]}%</h3>
+</div>
+""", unsafe_allow_html=True)
+
+    # 3. 时序曲线 + 雷达图
+    st.subheader("📈 指标演化曲线 & 风险雷达图")
+    g1,g2 = st.columns(2)
+    with g1:
+        df = pd.DataFrame(st.session_state.matrix_history)
+        fig = go.Figure()
+        for idx,col in enumerate(df.columns):
+            fig.add_trace(go.Scatter(y=df[col], name=col, line=dict(color=colors[idx])))
+        fig.update_layout(height=350, paper_bgcolor="#161b22", font=dict(color="#e0e0e0"))
+        st.plotly_chart(fig, use_container_width=True)
+    with g2:
+        fig = go.Figure(go.Scatterpolar(r=list(m.values()), theta=list(m.keys()), fill="toself", fillcolor="rgba(31,111,235,0.3)"))
+        fig.update_layout(polar=dict(radialaxis=dict(range=[0,100])), height=350, paper_bgcolor="#0e1117", font=dict(color="white"))
+        st.plotly_chart(fig, use_container_width=True)
+
+    # 4. 多智能体对抗视图
+    st.divider()
+    st.subheader("🏛️ 多智能体对抗视图")
+    last_evo = st.session_state.timeline[-1]["data"]
+    a_cols = st.columns(3)
+    with a_cols[0]:
+        st.markdown(f"<div class='agent-card'><h4>🏛️ 官方</h4><p>{last_evo['official']}</p></div>", unsafe_allow_html=True)
+    with a_cols[1]:
+        st.markdown(f"<div class='agent-card'><h4>👥 民众</h4><p>{last_evo['citizen']}</p></div>", unsafe_allow_html=True)
+    with a_cols[2]:
+        st.markdown(f"<div class='agent-card'><h4>📺 媒体</h4><p>{last_evo['media']}</p></div>", unsafe_allow_html=True)
+
+    # 5. 推演回放
+    st.divider()
+    st.subheader("⏪ 演化推演回放")
+    pb_cols = st.columns([4,1])
+    max_step = len(st.session_state.timeline)-1
+    with pb_cols[0]:
+        playback = st.slider("回放阶段", 0, max_step, max_step)
+    with pb_cols[1]:
+        st.markdown("<br>", unsafe_allow_html=True)
+        auto = st.button("▶️ 自动播放")
+    if auto:
+        for i in range(0, max_step+1):
+            st.session_state.playback_index = i
+            time.sleep(1.2)
+            st.rerun()
+    play_data = st.session_state.timeline[playback]["data"]
+    st.info(f"📌 第 {playback+1} 阶段 演化内容")
+    st.markdown(f"**官方**：{play_data['official']}")
+    st.markdown(f"**民众**：{play_data['citizen']}")
+
+    # 6. 因果链 + 黑天鹅
+    st.divider()
+    st.subheader("🔗 深度因果演化链")
+    st.markdown(f"<div class='logic-box'>{st.session_state.causal_chain}</div>", unsafe_allow_html=True)
+    st.error(f"🦢 黑天鹅事件：{st.session_state.swan}")
+    st.warning(f"🛡️ 系统审计：{last_evo['audit']}")
+
+    # 7. 报告 + 导出
+    st.divider()
+    st.subheader("📝 国家级战略研判报告")
+    st.markdown(f"<div class='report-card'>{st.session_state.report}</div>", unsafe_allow_html=True)
+
+    # 导出区
+    d_cols = st.columns(3)
+    with d_cols[0]:
+        json_data = json.dumps({
+            "event": event, "facts": st.session_state.facts,
+            "matrix": st.session_state.matrix_history,
+            "timeline": st.session_state.timeline,
+            "report": st.session_state.report
+        }, ensure_ascii=False, indent=2)
+        st.download_button("💾 导出JSON数据包", json_data, "SHENCE_数据.json", use_container_width=True)
+    with d_cols[1]:
+        st.download_button("📄 导出PDF报告", export_pdf(st.session_state.report), "SHENCE_研判报告.pdf", use_container_width=True)
+    with d_cols[2]:
+        st.button("🔁 重置仿真", on_click=reset, use_container_width=True)
+
+elif not client:
+    st.warning("请在左侧填写 API Key 后启动仿真")
