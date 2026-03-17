@@ -1089,6 +1089,33 @@ def gen_causal(event):
     except Exception as e:
         return f"[因果链生成异常] {str(e)[:100]}\n请检查 API 配置后重新运行。"
 
+# ====================== 【新增：根据上传文件生成报告】 ======================
+def gen_report_from_document(doc_text: str):
+    """直接根据上传的文件内容生成专业报告（无仿真流程）"""
+    prompt = f"""
+你是国家级战略安全顾问，根据用户上传的完整文档内容，生成正式、专业、结构化的研判报告。
+
+【用户上传文档全文】：
+{doc_text[:20000]}
+
+报告必须包含：
+1. 文档核心内容摘要
+2. 关键风险识别
+3. 社会/治理/资源影响分析
+4. 核心结论
+5. 对策与建议
+
+语言正式、严谨、结构化。
+"""
+    try:
+        return client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            timeout=90
+        ).choices[0].message.content
+    except Exception as e:
+        return f"【文档报告生成异常】API 调用失败：{str(e)[:120]}"
+
 def gen_report(event, facts, timeline, swan, matrix, resources):
     empirical = facts
     prompt = f"""
@@ -1107,7 +1134,8 @@ def gen_report(event, facts, timeline, swan, matrix, resources):
     try:
         return client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}], timeout=60).choices[0].message.content
     except Exception as e:
-        return f"【报告生成异常】API 调用失败：{str(e)[:120]}\n请检查网络与 API 配置后重新运行仿真并导出报告。"
+        return f"【报告生成异常】API 调用失败：{str(e)[:120]}\n请检查网络与 API 配置后重试仿真并导出报告。"
+# ========================================================================
 
 def classify_event_relevance(event: str) -> dict:
     """
@@ -1330,6 +1358,33 @@ if not OCR_AVAILABLE:
     st.caption("💡 扫描版 PDF 可启用 OCR：pip install pdf2image pytesseract（另需安装 Tesseract 程序）")
 if not DOCX_AVAILABLE:
     st.caption("💡 支持 Word：pip install python-docx")
+
+# ====================== 【新增：直接根据上传文件生成报告按钮】 ======================
+st.divider()
+st.subheader("📄 直接从上传文件生成报告（无需仿真）")
+doc_text_for_report = st.session_state.get("uploaded_doc_text", "")
+if doc_text_for_report and not doc_text_for_report.startswith("["):
+    if st.button("✅ 生成文件分析报告", type="primary", use_container_width=True):
+        with st.spinner("正在根据上传文件生成专业报告..."):
+            file_report = gen_report_from_document(doc_text_for_report)
+            st.session_state.uploaded_file_report = file_report
+            st.success("报告生成完成！")
+
+# 显示文件报告
+if "uploaded_file_report" in st.session_state and st.session_state.uploaded_file_report:
+    st.divider()
+    st.subheader("📝 上传文件分析报告")
+    st.markdown(f"<div class='report-card'>{st.session_state.uploaded_file_report}</div>", unsafe_allow_html=True)
+    # 导出文件报告
+    export_col1, export_col2 = st.columns(2)
+    with export_col1:
+        pdf_bytes = export_pdf(st.session_state.uploaded_file_report)
+        st.download_button("📄 导出PDF报告", pdf_bytes, "文件分析报告.pdf", use_container_width=True)
+    with export_col2:
+        if st.button("🔄 清空报告", use_container_width=True):
+            del st.session_state.uploaded_file_report
+            st.rerun()
+# ==================================================================================
 
 # 多轮记忆：引用历史推演
 _dbg("15-加载历史文件")
