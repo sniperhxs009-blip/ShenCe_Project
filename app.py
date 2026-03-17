@@ -919,21 +919,14 @@ scenario_name = st.text_input("📌 场景名称（可选）", value=st.session_
 if scenario_name:
     st.session_state.scenario_name = scenario_name
 
-# 场景模板
-templates = {
-    "城市断水断电48小时": "一线城市核心区域停电停水，通信不稳，恐慌抢购",
-    "粮食供应链中断7天": "粮食运输受阻，米面油库存下降，物价上涨",
-    "区域金融挤兑": "地方银行流动性危机，居民集中取现，支付承压",
-    "省级网络切断": "互联网出口中断，移动通信不稳，信息传播失控"
-}
-st.subheader("📋 快速场景模板")
-t_cols = st.columns(4)
-for i,(name,val) in enumerate(templates.items()):
-    if t_cols[i].button(f"🚨 {name}", use_container_width=True):
-        st.session_state.event = val
-
-# 事件输入
-event = st.text_area("📡 初始扰动事件", value=st.session_state.get("event",""), height=80)
+# 事件输入（自主输入，无需模板）
+st.subheader("📡 初始扰动事件")
+event = st.text_area(
+    "请自主描述您要推演的事件场景",
+    value=st.session_state.get("event", ""),
+    height=120,
+    placeholder="例如：一线城市核心区域停电停水 48 小时，通信不稳，民众恐慌抢购；或：粮食供应链中断 7 天，米面油库存下降，物价上涨……\n\n请自由描述事件的时间、地点、规模、影响范围等关键要素。"
+)
 
 # 控制面板
 with st.expander("⚙️ 仿真控制面板", expanded=True):
