@@ -3,7 +3,6 @@ from openai import OpenAI
 import json
 import plotly.graph_objects as go
 import requests
-import pandas as pd
 
 # --- 1. 严格保留亮色全宽布局样式 ---
 st.set_page_config(page_title="神策 - 战略级联动推演系统", layout="wide")
@@ -30,34 +29,29 @@ st.markdown("""
         border: 1px solid #d1d9e6; border-top: 20px solid #0056b3; 
         box-shadow: 0 15px 50px rgba(0,0,0,0.1); margin-top: 40px; width: 100%; color: #1a1a1a;
     }
-    .stProgress > div > div > div > div { background-color: #673ab7; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 侧边栏：强化架构与黑天鹅控制 ---
+# --- 2. 侧边栏：精准显示模型具体功能 ---
 with st.sidebar:
-    st.title("⚙️ MiroFish 级引擎架构")
+    st.title("⚙️ 系统大脑架构")
     
-    st.markdown("### 🤖 核心模型分工")
-    st.info("**GPT-4o (战略大脑)**: 负责高维度博弈与 PESTEL 深度研判。")
-    st.info("**GPT-4o-Mini (演化大脑)**: 驱动数值矩阵波动与连锁反应生成。")
-    st.info("**Serper.dev (实证事实库)**: 检索真实案例与链接。")
+    st.markdown("### 🤖 正在运行的模型节点")
+    st.info("**1. GPT-4o (战略指挥大脑)**\n\n负责核心“四角色”博弈仿真、PESTEL 深度研判报告生成。")
+    st.info("**2. GPT-4o-Mini (量化计算大脑)**\n\n负责演化指标矩阵计算、连锁反应灾难链条生成。")
+    st.info("**3. Serper.dev (实证事实库)**\n\n负责实时采集全球历史真实案例数据与原文链接。")
 
     st.divider()
-    st.subheader("📊 社会系统初始矩阵")
-    c1, c2 = st.columns(2)
-    with c1:
-        init_eff = st.slider("政府效能", 0, 100, 80)
-        init_panic = st.slider("社会焦虑", 0, 100, 20)
-    with c2:
-        init_res = st.slider("资源储备", 0, 100, 95)
-        init_risk = st.slider("初始风险", 0, 100, 10)
+    st.subheader("📊 社会系统变量注入")
+    init_eff = st.slider("政府效能 (Efficiency)", 0, 100, 80)
+    init_panic = st.slider("民众焦虑 (Panic)", 0, 100, 20)
+    init_res = st.slider("资源储备 (Resource)", 0, 100, 95)
     
     st.divider()
-    st.subheader("🔥 极端变量控制")
-    black_swan = st.toggle("允许产生“黑天鹅”扰动事件", value=True)
-    depth_level = st.select_slider("推演演化深度", options=["浅层观察", "中度模拟", "深度沙盘", "极端生存"], value="深度沙盘")
-    temp_val = st.slider("思维发散率", 0.0, 1.0, 0.7)
+    st.subheader("🛡️ 仿真环境控制")
+    enable_serper = st.toggle("启用实时实证检索", value=True)
+    black_swan = st.toggle("允许“黑天鹅”突发扰动", value=True)
+    temp_val = st.slider("思维发散率 (Temperature)", 0.0, 1.0, 0.7)
 
 # --- 3. 核心 API 配置 ---
 SECRET_KEY = "sk-LMB9VBTefa210eFC3581T3BLbkFJB0a3Bc8553a8406eb3B3"
@@ -65,64 +59,65 @@ BASE_URL = "https://api.ohmygpt.com/v1"
 SERPER_API_KEY = "d57fbcfd2ecd16f71b9b131984050fab2c64d707" 
 client = OpenAI(api_key=SECRET_KEY, base_url=BASE_URL)
 
-def fetch_detailed_evidence(query):
+def fetch_evidence(query):
+    if not enable_serper: return []
     url = "https://google.serper.dev/search"
     headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
-    payload = json.dumps({"q": f"{query} 历史灾难 真实社会反应 处置教训 案例", "num": 5})
+    payload = json.dumps({"q": f"{query} 真实历史案例 社会动态 处置教训", "num": 5})
     try:
         res = requests.post(url, headers=headers, data=payload, timeout=15)
         return res.json().get('organic', [])
     except: return []
 
-# --- 4. 增强推演逻辑 ---
-st.title("🛡️ SHENCE (神策) | 极端环境深度演化仿真沙盘")
-event_input = st.text_area("📡 仿真目标输入", placeholder="描述极端事件背景...", height=100)
+# --- 4. 主程序流程 ---
+st.title("🔮 SHENCE (神策) | 多脑协同·复杂演化仿真系统")
+event_input = st.text_area("📡 输入初始扰动事件", placeholder="输入极端事件，系统将启动多脑协同推演...", height=100)
 
 if st.button("🚀 启动全维度深度演化推演"):
     if event_input:
-        with st.status("🛠️ 正在构建复杂系统动态模型...", expanded=True) as status:
-            # 1. 联网实证检索
-            st.write("🌐 检索全球历史相似案例...")
-            raw_evidence = fetch_detailed_evidence(event_input)
-            facts_text = "\n".join([f"{e.get('snippet')}" for e in raw_evidence])
+        with st.status("🧠 模型大脑协同计算中...", expanded=True) as status:
+            # 1. 联网实证
+            st.write("🌐 正在检索全球相似案例并对齐事实...")
+            raw_evidence = fetch_evidence(event_input)
+            facts_text = "\n".join([e.get('snippet', '') for e in raw_evidence])
             
-            # 2. 注入动态博弈背景
-            lg = f"""
-            实证基础：{facts_text}
-            初始矩阵：行政{init_eff}, 焦虑{init_panic}, 资源{init_res}, 风险{init_risk}
-            推演模式：{depth_level} | 黑天鹅事件：{'启用' if black_swan else '禁用'}
+            # 2. 构建逻辑矩阵
+            lg = f"事实基础：{facts_text}\n初始状态：效能{init_eff}, 焦虑{init_panic}, 储备{init_res}"
+            
+            # 3. 趋势量化 (GPT-4o-Mini) - 增加强制补全逻辑
+            st.write("📊 正在量化社会系统演化矩阵...")
+            trend_p = """
+            输出 T0, T24, T48, T72, T7d 五阶段指标 JSON。
+            格式严格为: {"T0": [效, 焦, 匮, 险], ...} 
+            每个列表必须包含且仅包含 4 个 0-100 的整数。
             """
-            
-            # 3. 增强数值矩阵演化 (GPT-4o-Mini)
-            st.write("📊 模拟四维度指标演化环...")
-            trend_prompt = f"基于背景，输出T0, T24, T48, T72, T7d五个阶段的指标动态，要求数据体现资源衰竭对焦虑的正向反馈。JSON格式。"
             try:
                 res = client.chat.completions.create(
                     model="gpt-4o-mini", 
-                    messages=[{"role":"system","content":lg},{"role":"user","content":trend_prompt}],
+                    messages=[{"role":"system","content":lg},{"role":"user","content":trend_p}],
                     response_format={"type":"json_object"}
                 ).choices[0].message.content
                 time_data = json.loads(res)
             except:
-                time_data = {"T0":[50]*4, "T24":[60]*4, "T48":[65]*4, "T72":[75]*4, "T7d":[85]*4}
+                time_data = {k: [50, 50, 50, 50] for k in ["T0", "T24", "T48", "T72", "T7d"]}
 
-            # 4. PESTEL 深度研判 (GPT-4o)
-            st.write("🔄 启动 PESTEL 多维博弈推演...")
+            # 4. 深度博弈 (GPT-4o)
+            st.write("🔄 启动多主体动态博弈仿真...")
             def sim(role, p):
                 return client.chat.completions.create(model="gpt-4o", messages=[{"role":"system","content":f"你是{role}。{lg}"},{"role":"user","content":p}], temperature=temp_val).choices[0].message.content
             
-            off = sim("应急指挥部", "制定基于当前资源缺口的物理管控策略。")
-            cit = sim("极端受灾个体", "描述生存物资断绝后的心理演变规律。")
-            med = sim("信息流向官", "分析去中心化环境下的谣言传播动力学。")
-            rsk = sim("逻辑审计官", "识别模型幻觉，预测可能的黑天鹅扰动点。")
+            off = sim("应急指挥中心", "提出具体物理管控与资源调度方案。")
+            cit = sim("真实受灾民众", "描述生理与心理在压力下的真实演变。")
+            med = sim("信息观察员", "谣言传播路径与社会情绪拐点分析。")
+            rsk = sim("逻辑审计官", f"指出前述内容的逻辑漏洞，并注入一个{'黑天鹅变量' if black_swan else '潜在风险'}。")
             
-            path = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"user","content":f"生成该事件的复杂连锁灾难链条"}]).choices[0].message.content
+            path_code = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"user","content":f"基于{facts_text}生成该事件的复杂连锁灾难链条"}]).choices[0].message.content
             status.update(label="✅ 仿真演化完成", state="complete")
 
         # --- 渲染视图 ---
 
-        # A. 历史案例实证
-        st.markdown("### 📚 历史相似案例实证 (Evidence Benchmarking)")
+        # A. 历史实证板块
+        st.markdown("### 📚 历史相似案例实证 (Historical Evidence)")
         if raw_evidence:
             e_cols = st.columns(len(raw_evidence))
             for idx, item in enumerate(raw_evidence):
@@ -131,43 +126,54 @@ if st.button("🚀 启动全维度深度演化推演"):
                     <div class="evidence-card">
                         <strong>{item.get('title')[:25]}...</strong><br>
                         <p style="font-size: 0.85rem; color: #555; margin-top:8px;">{item.get('snippet')[:100]}...</p>
-                        <a href="{item.get('link')}" target="_blank" class="evidence-link">查看源档案 →</a>
+                        <a href="{item.get('link')}" target="_blank" class="evidence-link">查看详情 →</a>
                     </div>
                     """, unsafe_allow_html=True)
+        else: st.info("未发现直接历史对标案例。")
 
-        # B. 动态演化矩阵
+        # B. 演化矩阵 (彻底修复 KeyError)
         st.divider()
-        st.markdown("### 📈 社会系统多维演化矩阵 (Matrix Evolution)")
+        st.markdown("### 📈 社会系统演化矩阵 (Matrix Evolution)")
         fig = go.Figure()
-        names = ['行政效能', '社会焦虑', '资源储备', '动荡风险']
-        steps = list(time_data.keys())
+        names = ['行政效能', '民众焦虑', '资源储备', '动荡风险']
+        steps = ["T0", "T24", "T48", "T72", "T7d"]
+        
         for i in range(4):
-            y_vals = [time_data.get(s, [50]*4)[i] for s in steps]
-            fig.add_trace(go.Scatter(x=steps, y=y_vals, name=names[i], line=dict(width=6), mode='lines+markers'))
+            y_vals = []
+            for s in steps:
+                # 核心修复：如果阶段不存在或列表长度不足，自动补 50
+                stage_list = time_data.get(s, [50, 50, 50, 50])
+                if len(stage_list) <= i: # 列表长度不足
+                    val = 50
+                else:
+                    val = stage_list[i]
+                y_vals.append(val)
+            fig.add_trace(go.Scatter(x=['当前','24h','48h','72h','7d'], y=y_vals, name=names[i], line=dict(width=6), mode='lines+markers'))
+        
         fig.update_layout(height=450, margin=dict(l=0, r=0, t=20, b=0))
         st.plotly_chart(fig, use_container_width=True)
 
-        # C. 连锁反应路径
-        st.markdown("### 🔗 复杂因果逻辑链条 (Causal Chain)")
-        st.markdown(f"<div class='logic-box'>{path.replace('->', ' ➔ ')}</div>", unsafe_allow_html=True)
+        # C. 连锁反应
+        st.markdown("### 🔗 连锁反应路径")
+        st.markdown(f"<div class='logic-box'>{path_code.replace('->', ' ➔ ')}</div>", unsafe_allow_html=True)
 
-        # D. 智能体多维博弈
+        # D. 智能体博弈
         st.divider()
-        st.markdown("### 🔄 核心智能体动态决策博弈")
+        st.markdown("### 🔄 智能体多维博弈回溯")
         c1, c2, c3, c4 = st.columns(4)
-        with c1: st.markdown(f"<div class='role-card role-official'><b>🏛️ 指挥节点</b><br><br>{off}</div>", unsafe_allow_html=True)
-        with c2: st.markdown(f"<div class='role-card role-citizen'><b>⚠️ 社会节点</b><br><br>{cit}</div>", unsafe_allow_html=True)
-        with c3: st.markdown(f"<div class='role-card role-media'><b>📢 传播节点</b><br><br>{med}</div>", unsafe_allow_html=True)
-        with c4: st.markdown(f"<div class='role-card role-risk'><b>🛡️ 审计节点</b><br><br>{rsk}</div>", unsafe_allow_html=True)
+        with c1: st.markdown(f"<div class='role-card role-official'><b>🏛️ 官方决策</b><br><br>{off}</div>", unsafe_allow_html=True)
+        with c2: st.markdown(f"<div class='role-card role-citizen'><b>⚠️ 民众反应</b><br><br>{cit}</div>", unsafe_allow_html=True)
+        with c3: st.markdown(f"<div class='role-card role-media'><b>📢 舆论态势</b><br><br>{med}</div>", unsafe_allow_html=True)
+        with c4: st.markdown(f"<div class='role-card role-risk'><b>🛡️ 逻辑审计</b><br><br>{rsk}</div>", unsafe_allow_html=True)
 
-        # E. PESTEL 深度研判报告
+        # E. 综合研判报告
         st.divider()
-        report_p = f"基于博弈事实，按照 PESTEL 模型（政治、经济、社会、技术、环境、法律）为该事件生成万字级深度研判报告。强调生存平衡点与系统崩溃临界值。"
-        final_report = client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":report_p}]).choices[0].message.content
-        st.markdown(f"<div class='report-card'><h2>📝 PESTEL 全维度战略研判报告</h2><br>{final_report}</div>", unsafe_allow_html=True)
+        report_p = f"基于实证与仿真结果，为该事件撰写深度 PESTEL 研判报告。"
+        report = client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":report_p}]).choices[0].message.content
+        st.markdown(f"<div class='report-card'><h2>📝 全维度战略研判报告 (PESTEL 架构)</h2><br>{report}</div>", unsafe_allow_html=True)
         
         # F. 导出功能
-        st.download_button("📂 下载完整推演档案 (Markdown)", data=f"# 神策仿真报告\n\n## 初始事件\n{event_input}\n\n## 研判报告\n{final_report}", file_name="shence_report.md")
+        st.download_button("📂 导出推演档案 (.md)", data=f"# 神策推演报告\n\n{report}", file_name="shence_report.md")
 
 else:
-    st.info("💡 请在左侧配置仿真参数并输入推演目标。系统将调用多脑协同引擎进行全维度计算。")
+    st.info("💡 请在左侧配置仿真大脑参数并输入仿真目标。")
