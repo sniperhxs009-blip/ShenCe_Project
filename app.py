@@ -386,6 +386,59 @@ def build_time_axis(steps: int, step_hours: float, hf_params: dict) -> dict:
             axis["points"][i] = {"ts": None, "hour": None, "is_night": None}
     return axis
 
+# --- 动态展示名称池：根据事件语义随机选择，体现“像真人分析”的灵活度 ---
+RESOURCE_DISPLAY_POOLS = {
+    "警力": ["警力", "消防力量", "救援队伍", "安保力量", "武警", "志愿者队伍", "秩序维护力量", "应急响应队", "治安力量", "抢险队伍", "维稳力量", "疏散引导队"],
+    "医疗": ["医疗资源", "医护力量", "救护能力", "急救储备", "药品供应", "病床容量", "防疫物资", "医疗机构", "急救车辆", "医护梯队", "医疗保障", "卫生应急"],
+    "物资": ["物资储备", "食品供应", "饮用水", "应急物资", "救灾物资", "生活必需品", "粮油储备", "救灾包", "储备粮", "应急装备", "补给物资", "生活保障"],
+    "电力": ["电力供应", "能源储备", "供电能力", "燃油储备", "应急电源", "发电能力", "燃料储备", "电力保障", "备用电力", "能源调度", "供电设施", "发电容量"],
+    "通信": ["通信保障", "网络覆盖", "信息传播", "广播系统", "联络能力", "通信能力", "互联网接入", "移动网络", "信息基础设施", "通信设施", "联络通道", "信息渠道"],
+    "交通": ["交通运力", "物流能力", "运输保障", "道路通行", "配送能力", "交通管制", "疏散通道", "运输网络", "物流通道", "交通保障", "运力储备", "路网状况"],
+}
+INFRA_DISPLAY_POOLS = {
+    "电力": ["电力供应网", "供电网络", "电网系统", "能源基础设施", "配电系统", "电力设施", "供电体系", "输电网络", "电网", "供电保障"],
+    "通信": ["通信网络", "互联网", "移动网络", "信息基础设施", "通信设施", "网络接入", "通信系统", "信息网络", "通信保障", "网络覆盖"],
+    "交通": ["交通路网", "道路系统", "物流通道", "交通基础设施", "运输网络", "疏散通道", "路网体系", "交通设施", "道路通行", "交通保障"],
+    "供水": ["供水系统", "自来水网", "饮水保障", "供水基础设施", "水网", "水源供应", "供水设施", "供水管网", "饮水系统", "供水保障"],
+}
+
+def _select_display_names(pools: dict, event: str, seed_val: int) -> dict:
+    """
+    根据事件文本与随机种子，为每个内部键选取展示名称。
+    事件关键词匹配的名称权重更高，其余随机；保证可复现（相同 event+seed 得相同结果）。
+    """
+    event_lower = (event or "").lower()
+    rng = random.Random(seed_val)
+    result = {}
+    for internal_key, names in pools.items():
+        scores = []
+        for name in names:
+            score = 1.0  # 基础随机权重
+            # 整词或长词匹配：名称中的 2 字以上片段若出现在事件中则加分
+            for i in range(len(name) - 1):
+                seg = name[i:i+2]
+                if seg in event_lower:
+                    score += 1.5
+            if len(name) >= 3:
+                for i in range(len(name) - 2):
+                    seg = name[i:i+3]
+                    if seg in event_lower:
+                        score += 2.0
+            if name in event_lower:
+                score += 3.0
+            scores.append(max(0.1, score))
+        total = sum(scores) + 1e-6
+        weights = [s / total for s in scores]
+        chosen = rng.choices(names, weights=weights, k=1)[0]
+        result[internal_key] = chosen
+    return result
+
+def select_resource_display_names(event: str, seed_val: int) -> dict:
+    return _select_display_names(RESOURCE_DISPLAY_POOLS, event, seed_val)
+
+def select_infra_display_names(event: str, seed_val: int) -> dict:
+    return _select_display_names(INFRA_DISPLAY_POOLS, event, seed_val)
+
 def extract_evidence_factors(facts_text: str) -> dict:
     """
     将检索片段做轻量结构化：仅用于机制模型的参数调制（不是“让 AI 编造”）。
@@ -971,6 +1024,9 @@ if st.session_state.get("reset_requested"):
 if run and client and event:
     try:
         random.seed(int(seed))
+        # 根据事件生成动态展示名称（资源与基础设施），体现真人分析般的灵活度
+        st.session_state.resource_display_map = select_resource_display_names(event, int(seed))
+        st.session_state.infra_display_map = select_infra_display_names(event, int(seed))
         effective_steps = int(steps)
         if sim_mode.startswith("高保真"):
             hp = st.session_state.get("hf_params", {}) or {}
@@ -1086,30 +1142,34 @@ if st.session_state.timeline:
 </div>
 """, unsafe_allow_html=True)
 
-    # 2. 资源调度面板
+    # 2. 资源调度面板（展示名称根据事件动态生成，体现灵活分析）
     st.subheader("🚚 资源与兵力调度面板")
     r = st.session_state.resources[-1]
     r_cols = st.columns(6)
+    res_display = st.session_state.get("resource_display_map") or {}
     r_keys = list(r.keys())
-    for i,k in enumerate(r_keys):
+    for i, k in enumerate(r_keys):
+        label = res_display.get(k, k)
         r_cols[i].markdown(f"""
 <div class='resource-card'>
-{list(r.keys())[i]}<br>
+{label}<br>
 <h3>{r[k]}%</h3>
 </div>
 """, unsafe_allow_html=True)
 
-    # 2.1 基础设施子系统（高保真模式）
+    # 2.1 基础设施子系统（高保真模式，展示名称根据事件动态生成）
     if sim_mode.startswith("高保真") and st.session_state.get("infra_history"):
         st.subheader("🏗️ 基础设施子系统面板（高保真）")
         inf = st.session_state.infra_history[-1]
         inf_cols = st.columns(4)
         inf_keys = ["电力", "通信", "交通", "供水"]
+        inf_display = st.session_state.get("infra_display_map") or {}
         for i, k in enumerate(inf_keys):
+            label = inf_display.get(k, k)
             inf_cols[i].markdown(
                 f"""
 <div class='resource-card'>
-{k}<br>
+{label}<br>
 <h3>{inf.get(k, 0)}%</h3>
 </div>
 """,
@@ -1243,6 +1303,8 @@ if st.session_state.timeline:
             "time_axis": st.session_state.get("time_axis", {}),
             "infra_history": st.session_state.get("infra_history", []),
             "hf_params": st.session_state.get("hf_params", {}),
+            "resource_display_map": st.session_state.get("resource_display_map", {}),
+            "infra_display_map": st.session_state.get("infra_display_map", {}),
         }, ensure_ascii=False, indent=2)
         fname_json = (st.session_state.get("scenario_name") or "SHENCE").replace(" ", "_") + "_数据.json"
         st.download_button("💾 导出JSON数据包", json_data, fname_json, use_container_width=True)
