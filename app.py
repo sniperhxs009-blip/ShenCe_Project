@@ -43,8 +43,8 @@ st.markdown("""
 
 # --- 侧边栏 API ---
 st.sidebar.header("🔑 API 配置")
-openai_key = st.sidebar.text_input("OpenAI API Key", type="password")
-base_url = st.sidebar.text_input("Base URL", value="https://api.ohmygpt.com/v1")
+openai_key = st.sidebar.text_input("DeepSeek API Key（兼容 OpenAI SDK）", type="password")
+base_url = st.sidebar.text_input("Base URL", value="https://api.deepseek.com/v1")
 serper_key = st.sidebar.text_input("Serper API Key", type="password")
 
 client = None
@@ -95,7 +95,7 @@ def _default_matrix():
 def init_state(event, facts):
     prompt = f"事件：{event}\n事实：{facts}\n返回JSON（0-100）：行政效能、焦虑指数、资源缺口、动荡风险"
     try:
-        res = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"user","content":prompt}], response_format={"type":"json_object"})
+        res = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}], response_format={"type":"json_object"})
         j = safe_json(res.choices[0].message.content)
         return {k: max(0, min(100, int(j.get(k, 50)))) for k in ["行政效能", "焦虑指数", "资源缺口", "动荡风险"]}
     except Exception:
@@ -119,7 +119,7 @@ def evolve_step(event, facts, matrix, step, intervention, resources):
 严格返回JSON：official、citizen、media、audit（详细专业）
 """
     try:
-        res = client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":prompt}], response_format={"type":"json_object"}, timeout=30)
+        res = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}], response_format={"type":"json_object"}, timeout=30)
         return safe_json(res.choices[0].message.content)
     except Exception as e:
         return {
@@ -160,14 +160,14 @@ def gen_black_swan(event):
         return "无黑天鹅事件"
     try:
         prompt = f"{event} 背景下，生成低概率高冲击突发事件"
-        return client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":prompt}]).choices[0].message.content
+        return client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}]).choices[0].message.content
     except Exception as e:
         return f"[生成异常] 黑天鹅模块暂不可用：{str(e)[:60]}"
 
 def gen_causal(event):
     try:
         prompt = f"为 {event} 生成PESTEL全维度因果链，结构化输出"
-        return client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"user","content":prompt}]).choices[0].message.content
+        return client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}]).choices[0].message.content
     except Exception as e:
         return f"[因果链生成异常] {str(e)[:100]}\n请检查 API 配置后重新运行。"
 
@@ -184,7 +184,7 @@ def gen_report(event, facts, timeline, swan, matrix, resources):
 1. 事件定级 2. 物理瘫痪分析 3. 社会临界点 4. 演化复盘 5. 风险预警 6. 干预建议 7. 结论
 """
     try:
-        return client.chat.completions.create(model="gpt-4o", messages=[{"role":"user","content":prompt}], timeout=60).choices[0].message.content
+        return client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}], timeout=60).choices[0].message.content
     except Exception as e:
         return f"【报告生成异常】API 调用失败：{str(e)[:120]}\n请检查网络与 API 配置后重新运行仿真并导出报告。"
 
