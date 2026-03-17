@@ -25,12 +25,19 @@ import re
 import math
 _dbg("7-基础库完成")
 
-# PDF 解析（可选依赖）
+# PDF 解析：优先 PyMuPDF（质量更好），其次 pypdf
+PDF_AVAILABLE = False
+PYMUPDF_AVAILABLE = False
 try:
-    from pypdf import PdfReader
+    import fitz  # PyMuPDF
+    PYMUPDF_AVAILABLE = True
     PDF_AVAILABLE = True
 except ImportError:
-    PDF_AVAILABLE = False
+    try:
+        from pypdf import PdfReader
+        PDF_AVAILABLE = True
+    except ImportError:
+        PDF_AVAILABLE = False
 
 # Word 解析（可选依赖）
 try:
@@ -223,31 +230,49 @@ _dbg("13-会话状态初始化")
 
 # --- 文档解析（种子上传）---
 def parse_uploaded_document(uploaded_file) -> str:
-    """解析上传的 PDF、TXT、DOCX、MD，返回纯文本（用于补充 facts）。"""
+    """解析上传的 PDF、TXT、DOCX、MD，返回纯文本。PDF 优先 PyMuPDF 以提升提取质量。"""
     if not uploaded_file:
         return ""
     try:
         name = (uploaded_file.name or "").lower()
         raw = uploaded_file.read()
         if name.endswith(".txt"):
-            return raw.decode("utf-8", errors="replace")[:15000]
+            return raw.decode("utf-8", errors="replace")[:25000]
         if name.endswith(".md") or name.endswith(".markdown"):
-            return raw.decode("utf-8", errors="replace")[:15000]
+            return raw.decode("utf-8", errors="replace")[:25000]
         if name.endswith(".pdf") and PDF_AVAILABLE:
-            reader = PdfReader(io.BytesIO(raw))
-            parts = []
-            for i, p in enumerate(reader.pages):
-                if i >= 20:
-                    break
-                t = p.extract_text() or ""
-                parts.append(t)
-            return "\n".join(parts)[:15000]
+            text_parts = []
+            if PYMUPDF_AVAILABLE:
+                try:
+                    doc = fitz.open(stream=raw, filetype="pdf")
+                    for i in range(min(doc.page_count, 35)):
+                        page = doc.load_page(i)
+                        t = page.get_text("text", sort=True) or ""
+                        if t.strip():
+                            text_parts.append(t)
+                    doc.close()
+                except Exception:
+                    pass
+            if not text_parts and PDF_AVAILABLE:
+                try:
+                    from pypdf import PdfReader
+                    reader = PdfReader(io.BytesIO(raw))
+                    for i, p in enumerate(reader.pages):
+                        if i >= 35:
+                            break
+                        t = p.extract_text() or ""
+                        if t.strip():
+                            text_parts.append(t)
+                except Exception:
+                    pass
+            out = "\n\n".join(text_parts)
+            return out[:25000] if out else ""
         if name.endswith(".pdf") and not PDF_AVAILABLE:
-            return "[PDF 解析需要安装 pypdf：pip install pypdf]"
+            return "[PDF 解析需要安装 pypdf 或 pymupdf：pip install pymupdf]"
         if (name.endswith(".docx") or name.endswith(".doc")) and DOCX_AVAILABLE:
             doc = DocxDocument(io.BytesIO(raw))
             parts = [p.text for p in doc.paragraphs]
-            return "\n".join(parts)[:15000]
+            return "\n".join(parts)[:25000]
         if (name.endswith(".docx") or name.endswith(".doc")) and not DOCX_AVAILABLE:
             return "[Word 解析需要安装 python-docx：pip install python-docx]"
     except Exception as e:
@@ -318,18 +343,21 @@ def extract_document_meta(doc_text: str, api_client) -> dict:
     """
     if not doc_text or doc_text.startswith("["):
         return {}
-    text_sample = doc_text[:6000]
+    text_sample = doc_text[:10000]
     if api_client:
-        prompt = f"""从以下文档开头内容中，精确抽取核心信息。文档内容：
+        prompt = f"""你是一个文档信息抽取器。请从以下文档内容中【逐字查找并精确抽取】核心信息。
+要求：企业名、年度必须与文档中出现的完全一致，不得推测、不得编造、不得使用文档外的知识。
+
+文档内容：
 ---
 {text_sample}
 ---
 
 严格返回JSON，且仅包含以下键（若无则填空字符串）：
-- company_name: 企业/公司全称（如 XX股份有限公司），必须是文档中实际出现的
-- report_year: 报告所属年度（如 2025年、2024年度），必须是文档中实际出现的，不要推测
+- company_name: 企业/公司全称（如 XX股份有限公司），必须是文档中实际出现的完整名称
+- report_year: 报告所属年度（如 2025年、2024年度），必须是文档中实际出现的
 - doc_type: 文档类型（如 年度报告、财务报告、年报）
-- key_summary: 100字内的关键要点摘要（行业、主营、重要风险或指标）
+- key_summary: 80字内的关键要点（行业、主营、重要风险或财务指标，仅基于文档内容）
 
 只输出JSON，无其他内容。"""
         try:
@@ -361,7 +389,7 @@ def build_seed_doc_header(meta: dict) -> str:
     """根据文档元数据构建置顶的种子材料核心信息块。"""
     if not meta or (not meta.get("company_name") and not meta.get("report_year")):
         return ""
-    parts = ["[种子材料核心信息 - 研判必须以此为准]"]
+    parts = ["[种子材料核心信息 - 研判唯一依据，禁止偏离]"]
     if meta.get("company_name"):
         parts.append(f"企业/主体：{meta['company_name']}")
     if meta.get("report_year"):
@@ -370,7 +398,7 @@ def build_seed_doc_header(meta: dict) -> str:
         parts.append(f"文档类型：{meta['doc_type']}")
     if meta.get("key_summary"):
         parts.append(f"关键要点：{meta['key_summary']}")
-    parts.append("（以下所有分析与研判必须针对上述企业及年度，不得偏离或泛泛而谈）")
+    parts.append("（所有分析必须直接引用上述企业及年度，禁止泛泛而谈、禁止引用无关主体）")
     return "\n".join(parts) + "\n\n"
 
 # --- 核心工具函数 ---
@@ -1155,9 +1183,9 @@ def gen_report(event, facts, timeline, swan, matrix, resources):
         company = doc_meta.get("company_name", "未知")
         year = doc_meta.get("report_year", "未知")
         doc_constraint = f"""
-【重要约束】种子上传了企业/主体材料：{company}，报告年度：{year}。
-研判报告必须针对该企业及该年度，分析结论必须与种子上传材料中的企业、行业、财务数据强相关。
-不得泛泛而谈、不得提及无关企业、不得使用错误的年度。报告开头应明确标注分析对象。
+【硬性约束】分析对象：{company}，{year}。
+研判报告必须严格基于种子上传材料，所有数据、结论、风险分析必须直接引用材料中的企业、行业与财务信息。
+禁止：泛泛而谈、提及无关企业、使用错误年度、编造材料中未出现的内容。报告开头必须明确标注「分析对象：{company}，{year}」。
 
 """
     prompt = f"""
@@ -1404,7 +1432,7 @@ if doc_text_uploaded and not doc_text_uploaded.startswith("[") and len(doc_text_
     if meta and (meta.get("company_name") or meta.get("report_year")):
         st.info(f"**已识别**：{meta.get('company_name','')} | {meta.get('report_year','')} | {meta.get('doc_type','')}")
 if not PDF_AVAILABLE:
-    st.caption("💡 支持 PDF：pip install pypdf")
+    st.caption("💡 支持 PDF：pip install pymupdf 或 pip install pypdf")
 if not DOCX_AVAILABLE:
     st.caption("💡 支持 Word：pip install python-docx")
 
@@ -1541,12 +1569,31 @@ if run and client and event:
                 s.update(label="🌐 检索实证案例")
                 facts, evidence_items = get_evidence_items(event)
                 doc_text = st.session_state.get("uploaded_doc_text") or ""
+                doc_meta = {}
                 if doc_text and not doc_text.startswith("["):
                     s.update(label="📄 解析种子上传文档（企业、年度、要点）")
                     doc_meta = extract_document_meta(doc_text, client)
                     st.session_state.uploaded_doc_meta = doc_meta
                     seed_header = build_seed_doc_header(doc_meta)
-                    facts = (seed_header or "") + (facts or "") + "\n\n[种子上传材料全文]\n" + doc_text[:10000]
+                    # 种子上传时：以文档为主体，网络检索为辅，避免无关案例覆盖
+                    primary = f"""[分析主体-必读] 以下种子上传材料为研判的唯一条款依据，所有结论必须直接引用其中企业、年度与数据。
+网络检索结果仅作辅助参考，不得替代或覆盖种子上传材料中的主体信息。
+
+{seed_header}[种子上传材料全文]
+{doc_text[:18000]}
+"""
+                    web_ref = (facts or "").strip()
+                    if web_ref:
+                        facts = primary + "\n\n[网络参考案例-仅供参考，分析主体仍为上方种子上传材料]\n" + web_ref[:4000]
+                    else:
+                        facts = primary
+                else:
+                    facts = facts or ""
+                # 种子上传时注入企业/年度到事件，全流程锚定分析对象
+                event_for_analysis = event
+                if doc_meta and (doc_meta.get("company_name") or doc_meta.get("report_year")):
+                    event_for_analysis = f"【分析对象】{doc_meta.get('company_name','')}，{doc_meta.get('report_year','')}。\n\n【用户描述的扰动事件】\n{event}"
+                st.session_state.event = event_for_analysis
                 hist_ref = st.session_state.get("history_ref") or ""
                 if hist_ref:
                     facts = (facts or "") + "\n\n[历史推演参考]\n" + hist_ref
@@ -1568,7 +1615,7 @@ if run and client and event:
                 )
 
                 s.update(label="📊 初始化社会矩阵")
-                matrix = init_state(event, facts)
+                matrix = init_state(event_for_analysis, facts)
                 st.session_state.matrix_history = [matrix]
 
                 s.update(label="🚚 初始化资源调度系统")
@@ -1579,14 +1626,14 @@ if run and client and event:
                 st.session_state.infra_history = [infra]
 
                 s.update(label="🔗 生成因果链")
-                chain = gen_causal(event)
+                chain = gen_causal(event_for_analysis)
                 st.session_state.causal_chain = chain
 
                 swan_trigger_step = int(st.session_state.get("swan_trigger_step") or 0)
                 swan_trigger_risk = int(st.session_state.get("swan_trigger_risk") or 0)
                 if enable_swan and swan_trigger_step == 0:
                     s.update(label="🦢 生成黑天鹅")
-                    swan = gen_black_swan(event)
+                    swan = gen_black_swan(event_for_analysis)
                     st.session_state.swan = swan
                 elif enable_swan and swan_trigger_step > 0:
                     st.session_state.swan = f"待定（将在第{swan_trigger_step}步评估）"
@@ -1613,9 +1660,9 @@ if run and client and event:
                 if sim_mode.startswith("高保真"):
                     # 在高保真模式下，将审计日志拼入提示，强化“可追溯”
                     audit_summary = json.dumps(st.session_state.audit_log, ensure_ascii=False)
-                    report = gen_report(event, facts + "\n\n[机制审计日志摘要]\n" + audit_summary[:2500], timeline, st.session_state.get("swan",""), matrix, resources)
+                    report = gen_report(event_for_analysis, facts + "\n\n[机制审计日志摘要]\n" + audit_summary[:2500], timeline, st.session_state.get("swan",""), matrix, resources)
                 else:
-                    report = gen_report(event, facts, timeline, st.session_state.get("swan",""), matrix, resources)
+                    report = gen_report(event_for_analysis, facts, timeline, st.session_state.get("swan",""), matrix, resources)
                 st.session_state.report = report
                 _save_to_history(st.session_state.get("scenario_name",""), event, report, st.session_state.matrix_history)
                 s.update(label="✅ 仿真完成", state="complete")
