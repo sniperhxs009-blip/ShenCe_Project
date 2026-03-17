@@ -203,6 +203,7 @@ init_keys = [
     "stepping_matrix", "stepping_resources", "stepping_infra", "stepping_factors",
     "perspective_chat_history",
     "scenario_branches", "current_branch_view", "entity_graph", "history_scenarios",
+    "doc_subject",
 ]
 for k in init_keys:
     if k not in st.session_state:
@@ -216,6 +217,8 @@ for k in init_keys:
             st.session_state[k] = 0
         elif k == "sim_phase":
             st.session_state[k] = ""
+        elif k == "doc_subject":
+            st.session_state[k] = {}
         else:
             st.session_state[k] = ""
 
@@ -294,6 +297,70 @@ def fetch_url_as_seed(url: str) -> str:
         return text[:12000]
     except Exception as e:
         return f"[URL 抓取异常] {str(e)[:80]}"
+
+def _heuristic_extract_subject(text: str) -> dict:
+    """无 API 时用正则从文档前 4000 字提取企业名与年度。"""
+    t = (text or "")[:4000]
+    out = {"company": "", "year": ""}
+    m = re.search(r"([\u4e00-\u9fa5A-Za-z0-9]{2,28}(?:股份有限公司|集团有限公司|有限公司))", t)
+    if m:
+        out["company"] = m.group(1)
+    for y in re.findall(r"20[12][0-9]\s*年(?:度)?|二[〇零○]二[〇一二三四五六七八九]\s*年", t):
+        digit = re.search(r"20[12][0-9]", y)
+        if digit:
+            out["year"] = digit.group(0) + "年"
+            break
+        if "二" in y:
+            cn = {"〇":"0","零":"0","○":"0","一":"1","二":"2","三":"3","四":"4","五":"5","六":"6","七":"7","八":"8","九":"9"}
+            d = "".join(cn.get(c,c) for c in y if c in cn)
+            if len(d) == 1:
+                out["year"] = "202" + d + "年"
+                break
+    return out
+
+def auto_extract_doc_subject(doc_text: str, api_client) -> dict:
+    """
+    自动从文档中识别分析对象（企业名、年度）。
+    独立调用：只传入文档，无其他上下文，避免模型受干扰。
+    """
+    if not doc_text or doc_text.startswith("["):
+        return {}
+    sample = doc_text[:8000]
+    if api_client:
+        prompt = f"""任务：从以下文档中提取企业全称和报告年度。
+
+规则：
+1. 企业全称必须与文档中出现的完全一致，通常以“股份有限公司”“有限公司”等结尾。
+2. 报告年度必须与文档中出现的完全一致，如“2025年”“2024年度”。
+3. 若文档中未明确出现，则对应项填空字符串""。
+4. 禁止编造、禁止使用文档外的任何名称。
+
+文档：
+---
+{sample}
+---
+
+只输出JSON，格式：{{"company":"企业全称","year":"报告年度"}}"""
+        try:
+            res = api_client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                timeout=25,
+            )
+            j = safe_json(res.choices[0].message.content)
+            company = str(j.get("company") or "").strip()
+            year = str(j.get("year") or "").strip()
+            if not company and not year:
+                return _heuristic_extract_subject(doc_text)
+            if not year:
+                yr = re.search(r"20[12][0-9]\s*年", doc_text[:3000])
+                if yr:
+                    year = yr.group(0)
+            return {"company": company[:60], "year": year[:20]}
+        except Exception:
+            return _heuristic_extract_subject(doc_text)
+    return _heuristic_extract_subject(doc_text)
 
 # --- 核心工具函数 ---
 def safe_json(res):
@@ -988,7 +1055,11 @@ def _default_matrix():
     return {"行政效能": 50, "焦虑指数": 50, "资源缺口": 50, "动荡风险": 50}
 
 def init_state(event, facts):
-    prompt = f"事件：{event}\n事实：{facts}\n返回JSON（0-100）：行政效能、焦虑指数、资源缺口、动荡风险"
+    subject = st.session_state.get("doc_subject") or {}
+    ctx = ""
+    if subject.get("company") or subject.get("year"):
+        ctx = f"分析对象：{subject.get('company','')}，{subject.get('year','')}。\n"
+    prompt = f"{ctx}事件：{event}\n事实：{facts}\n返回JSON（0-100）：行政效能、焦虑指数、资源缺口、动荡风险"
     try:
         res = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}], response_format={"type":"json_object"})
         j = safe_json(res.choices[0].message.content)
@@ -1067,13 +1138,17 @@ def gen_causal(event):
         return f"[因果链生成异常] {str(e)[:100]}\n请检查 API 配置后重新运行。"
 
 def gen_report(event, facts, timeline, swan, matrix, resources):
+    subject = st.session_state.get("doc_subject") or {}
     seed_hint = ""
-    if st.session_state.get("uploaded_doc_text") and not str(st.session_state.get("uploaded_doc_text", "")).startswith("["):
-        seed_hint = """
-【硬性约束】实证材料开头为用户上传的种子文档。你必须从该文档中找出企业名称与报告年度，并严格基于该文档进行分析。
-所有企业名、年度、数据必须直接出自该文档，禁止编造、禁止使用文档中未出现的任何企业名称。报告开头应明确写出你从文档中识别出的分析对象。
+    if subject.get("company") or subject.get("year"):
+        c, y = subject.get("company", ""), subject.get("year", "")
+        seed_hint = f"""
+【分析对象-不可更改】企业：{c}，年度：{y}。此信息由系统从用户上传文档中自动识别。
+报告必须针对该企业该年度，开头须写明「分析对象：{c}，{y}」，禁止使用其他企业名称。
 
 """
+    elif st.session_state.get("uploaded_doc_text") and not str(st.session_state.get("uploaded_doc_text", "")).startswith("["):
+        seed_hint = "\n【硬性约束】实证材料开头为用户上传的种子文档。你必须从该文档中找出企业名称与报告年度，并严格基于该文档分析。禁止编造企业名。\n\n"
     prompt = f"""
 你是国家级战略安全顾问，生成正式研判报告。
 {seed_hint}
@@ -1443,14 +1518,20 @@ if run and client and event:
                 s.update(label="🌐 检索实证案例")
                 doc_text = st.session_state.get("uploaded_doc_text") or ""
                 if doc_text and not doc_text.startswith("[") and len(doc_text) > 200:
-                    # 新方案：有上传时仅用文档，不用网络检索，避免无关内容干扰
-                    facts = f"""【用户上传的种子材料 - 研判唯一依据，企业名称与年度必须从此文档中提取，禁止使用文档外的任何企业名】
+                    s.update(label="📄 自动识别文档中的企业与年度")
+                    subject = auto_extract_doc_subject(doc_text, client)
+                    st.session_state.doc_subject = subject
+                    anchor = ""
+                    if subject.get("company") or subject.get("year"):
+                        anchor = f"【系统自动识别的分析对象】企业：{subject.get('company','')}，年度：{subject.get('year','')}。以下研判必须与此完全一致。\n\n"
+                    facts = f"""{anchor}【用户上传的种子材料】
 ---
 {doc_text[:20000]}
 ---
 【以上为种子材料结束】"""
                     evidence_items = []
                 else:
+                    st.session_state.doc_subject = {}
                     facts, evidence_items = get_evidence_items(event)
                 st.session_state.event = event
                 hist_ref = st.session_state.get("history_ref") or ""
@@ -1661,6 +1742,9 @@ elif st.session_state.get("sim_phase") == "stepping" and st.session_state.get("r
 # 危机推演模式：完整展示
 elif st.session_state.timeline:
     st.divider()
+    subj = st.session_state.get("doc_subject") or {}
+    if subj.get("company") or subj.get("year"):
+        st.info(f"📄 **系统自动识别的分析对象**：{subj.get('company','')}，{subj.get('year','')}")
     st.subheader("📺 实时态势总面板")
 
     # 1. 状态指标
