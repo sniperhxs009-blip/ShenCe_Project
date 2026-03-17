@@ -12,6 +12,13 @@ import time
 import re
 import math
 
+# PDF 解析（可选依赖）
+try:
+    from pypdf import PdfReader
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
+
 # --- 页面配置 ---
 st.set_page_config(page_title="SHENCE 3.0 | 社会演化仿真旗舰版", layout="wide", initial_sidebar_state="expanded")
 
@@ -159,17 +166,52 @@ init_keys = [
     "reset_requested", "autoplay_running", "scenario_name",
     "audit_log", "evidence_items", "infra_history", "hf_params",
     "evidence_factor_map",
-    "decay_schedule"
-    , "time_axis"
+    "decay_schedule", "time_axis",
+    "uploaded_doc_text", "sim_phase", "stepping_current_step", "stepping_effective_steps",
+    "stepping_matrix", "stepping_resources", "stepping_infra", "stepping_factors",
+    "perspective_chat_history",
 ]
 for k in init_keys:
     if k not in st.session_state:
-        st.session_state[k] = [] if k in ["timeline", "matrix_history", "audit_log", "evidence_items", "infra_history"] else (False if k in ["reset_requested", "autoplay_running"] else "")
+        if k in ["timeline", "matrix_history", "audit_log", "evidence_items", "infra_history", "perspective_chat_history"]:
+            st.session_state[k] = []
+        elif k in ["reset_requested", "autoplay_running"]:
+            st.session_state[k] = False
+        elif k in ["stepping_current_step", "stepping_effective_steps"]:
+            st.session_state[k] = 0
+        elif k == "sim_phase":
+            st.session_state[k] = ""
+        else:
+            st.session_state[k] = ""
 
 st.session_state.hf_params = hf_params
 
 if st.session_state.get("playback_index") is None or not isinstance(st.session_state.get("playback_index"), int):
     st.session_state.playback_index = 0
+
+# --- 文档解析（种子上传）---
+def parse_uploaded_document(uploaded_file) -> str:
+    """解析上传的 PDF 或 TXT，返回纯文本（用于补充 facts）。"""
+    if not uploaded_file:
+        return ""
+    try:
+        name = (uploaded_file.name or "").lower()
+        if name.endswith(".txt"):
+            return uploaded_file.read().decode("utf-8", errors="replace")[:15000]
+        if name.endswith(".pdf") and PDF_AVAILABLE:
+            reader = PdfReader(io.BytesIO(uploaded_file.read()))
+            parts = []
+            for i, p in enumerate(reader.pages):
+                if i >= 20:  # 限制页数
+                    break
+                t = p.extract_text() or ""
+                parts.append(t)
+            return "\n".join(parts)[:15000]
+        if name.endswith(".pdf") and not PDF_AVAILABLE:
+            return "[PDF 解析需要安装 pypdf：pip install pypdf]"
+    except Exception as e:
+        return f"[文档解析异常] {str(e)[:80]}"
+    return ""
 
 # --- 核心工具函数 ---
 def safe_json(res):
@@ -998,6 +1040,31 @@ def classify_event_relevance(event: str) -> dict:
     except Exception as e:
         return {"is_crisis_simulation": True, "reason": f"分类异常，默认启用危机推演：{str(e)[:60]}"}
 
+def chat_with_perspective(perspective: str, perspective_narrative: str, user_question: str, context: str) -> str:
+    """与某一视角（官方/民众/媒体/审计）对话，基于其叙事与推演上下文回答。"""
+    if not client:
+        return "[需要配置 API] 请配置 API Key 后使用与视角对话功能。"
+    role_map = {"官方": "官方决策者", "民众": "普通民众代表", "媒体": "媒体评论员", "审计": "独立审计专家"}
+    role = role_map.get(perspective, perspective)
+    prompt = f"""你在扮演推演系统中的「{role}」视角。以下是该视角在推演中的叙事与立场摘要：
+
+{perspective_narrative[:800]}
+
+推演背景摘要：
+{context[:600]}
+
+用户提问：{user_question}
+
+请以该视角的身份和立场，用第一人称或该角色口吻简洁回答（150字以内）。不要跳出角色，不要以"作为AI"等表述开头。"""
+    try:
+        return client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            timeout=20,
+        ).choices[0].message.content
+    except Exception as e:
+        return f"[对话异常] {str(e)[:80]}"
+
 def gen_creative_response(event: str) -> str:
     """
     当用户输入与政府/社会危机无关时，直接按用户意图完成任务（如续写、预测走向等）。
@@ -1041,6 +1108,19 @@ scenario_name = st.text_input("📌 场景名称（可选）", value=st.session_
 if scenario_name:
     st.session_state.scenario_name = scenario_name
 
+# 文档种子上传（补充背景知识）
+st.subheader("📎 种子上传（可选）")
+uploaded_doc = st.file_uploader("上传 PDF 或 TXT 作为背景材料", type=["pdf", "txt"], help="如舆情报告、政策草案、小说片段等，将融入推演的知识上下文")
+if uploaded_doc:
+    doc_text = parse_uploaded_document(uploaded_doc)
+    st.session_state.uploaded_doc_text = doc_text
+    if doc_text and not doc_text.startswith("["):
+        st.caption(f"已解析 {len(doc_text)} 字符，将并入实证上下文")
+else:
+    st.session_state.uploaded_doc_text = ""
+if not PDF_AVAILABLE:
+    st.caption("💡 支持 PDF 需安装：pip install pypdf")
+
 # 事件输入（自主输入，无需模板）
 st.subheader("📡 初始扰动事件")
 event = st.text_area(
@@ -1052,14 +1132,16 @@ event = st.text_area(
 
 # 控制面板
 with st.expander("⚙️ 仿真控制面板", expanded=True):
-    c1,c2,c3 = st.columns(3)
+    c1,c2,c3,c4 = st.columns(4)
     with c1:
         steps = st.slider("演化步数", 1, 8, 4)
     with c2:
+        step_mode = st.radio("推演节奏", ["连续运行", "逐步推演（可中途干预）"], horizontal=True, help="逐步推演：每步可修改干预策略或注入新事件")
+    with c3:
         intervention = st.selectbox("🎯 官方干预策略", [
             "无","紧急物资投放","媒体安抚","加强安保","全城宵禁","电力抢修"
         ], help="无/物资/媒体/安保/宵禁/电力，不同策略会改变社会矩阵演化系数")
-    with c3:
+    with c4:
         enable_swan = st.checkbox("启用黑天鹅", value=True)
     with st.expander("📖 干预策略说明", expanded=False):
         st.markdown("""
@@ -1125,6 +1207,9 @@ if run and client and event:
             with st.status("✅ 仿真启动中...", expanded=True) as s:
                 s.update(label="🌐 检索实证案例")
                 facts, evidence_items = get_evidence_items(event)
+                doc_text = st.session_state.get("uploaded_doc_text") or ""
+                if doc_text and not doc_text.startswith("["):
+                    facts = (facts or "") + "\n\n[种子上传材料]\n" + doc_text[:8000]
                 st.session_state.facts = facts
                 st.session_state.evidence_items = evidence_items
                 factors, factor_map = extract_evidence_factors_from_items(evidence_items, facts)
@@ -1160,12 +1245,24 @@ if run and client and event:
                 swan = gen_black_swan(event) if enable_swan else "无黑天鹅"
                 st.session_state.swan = swan
 
-                s.update(label=f"🔄 执行 {effective_steps} 步演化")
-                timeline = []
-                for i in range(1, effective_steps+1):
-                    if sim_mode.startswith("高保真"):
-                        prev = matrix
-                        matrix, resources, infra, audit = mechanistic_step(
+                use_stepping = step_mode.startswith("逐步推演")
+                if use_stepping:
+                    st.session_state.sim_phase = "stepping"
+                    st.session_state.stepping_effective_steps = effective_steps
+                    st.session_state.stepping_current_step = 0
+                    st.session_state.timeline = []
+                    st.session_state.stepping_matrix = matrix
+                    st.session_state.stepping_resources = resources
+                    st.session_state.stepping_infra = infra
+                    st.session_state.stepping_factors = factors
+                    s.update(label="✅ 初始化完成，请逐步执行", state="complete")
+                else:
+                    s.update(label=f"🔄 执行 {effective_steps} 步演化")
+                    timeline = []
+                    for i in range(1, effective_steps+1):
+                        if sim_mode.startswith("高保真"):
+                            prev = matrix
+                            matrix, resources, infra, audit = mechanistic_step(
                             matrix,
                             resources,
                             factors,
@@ -1202,7 +1299,7 @@ if run and client and event:
                     report = gen_report(event, facts, timeline, swan, matrix, resources)
                 st.session_state.report = report
                 s.update(label="✅ 仿真完成", state="complete")
-            st.success("仿真完成！")
+            st.success("仿真完成！" if not use_stepping else "初始化完成，请在下方逐步推演并干预。")
     except Exception as e:
         st.error(f"仿真流程异常：{str(e)}。请检查 API Key、Base URL 与网络后重试。")
         if "matrix_history" in st.session_state and st.session_state.matrix_history:
@@ -1220,6 +1317,77 @@ if st.session_state.get("run_mode") == "creative":
     st.markdown(f"<div class='report-card'>{st.session_state.get('creative_output', '')}</div>", unsafe_allow_html=True)
     if st.button("🔁 重置", key="reset_creative"):
         request_reset()
+        st.rerun()
+
+# 逐步推演模式：每步可干预
+elif st.session_state.get("sim_phase") == "stepping" and st.session_state.get("run_mode") == "crisis":
+    st.divider()
+    st.subheader("⏳ 逐步推演控制台")
+    eff = int(st.session_state.get("stepping_effective_steps") or 4)
+    cur = int(st.session_state.get("stepping_current_step") or 0)
+    matrix = st.session_state.get("stepping_matrix") or st.session_state.matrix_history[-1] if st.session_state.matrix_history else {}
+    resources = st.session_state.get("stepping_resources") or st.session_state.resources[-1] if st.session_state.resources else {}
+    infra = st.session_state.get("stepping_infra") or st.session_state.infra_history[-1] if st.session_state.infra_history else {}
+    factors = st.session_state.get("stepping_factors") or {}
+    facts = st.session_state.get("facts") or ""
+    event = st.session_state.get("event") or ""
+
+    if cur < eff and matrix:
+        next_step = cur + 1
+        st.info(f"将执行第 **{next_step}** 步（共 {eff} 步）")
+        step_col1, step_col2 = st.columns(2)
+        with step_col1:
+            step_intervention = st.selectbox("本步干预策略", ["无","紧急物资投放","媒体安抚","加强安保","全城宵禁","电力抢修"], key="step_intervention")
+        with step_col2:
+            step_injected = st.text_input("注入事件（可选）", placeholder="如：突发火灾、谣言扩散等，留空则无", key="step_injected")
+        step_next = st.button("▶️ 执行下一步", type="primary", key="step_next_btn")
+        if step_next:
+            with st.spinner(f"正在执行第 {next_step} 步..."):
+                event_ctx = event
+                if step_injected and step_injected.strip():
+                    event_ctx = event + "\n[本步注入]" + step_injected.strip()
+                    inj_factors = extract_evidence_factors(step_injected)
+                    factors = {k: min(1.0, v + 0.25 * inj_factors.get(k, 0)) for k, v in factors.items()}
+                if sim_mode.startswith("高保真"):
+                    prev = matrix
+                    matrix, resources, infra, audit = mechanistic_step(
+                        matrix, resources, factors, step_intervention, next_step, infra,
+                        st.session_state.hf_params, st.session_state.evidence_items,
+                        st.session_state.evidence_factor_map, st.session_state.decay_schedule,
+                        st.session_state.time_axis,
+                    )
+                    st.session_state.audit_log.append(audit)
+                    evo = narrate_from_mechanism(event_ctx, facts, next_step, step_intervention, matrix, prev, resources, audit)
+                    timeline = st.session_state.get("timeline") or []
+                    timeline.append({"step": next_step, "data": evo, "audit": audit, "state": matrix, "resources": resources, "infra": infra})
+                else:
+                    evo = evolve_step(event_ctx, facts, matrix, next_step, step_intervention, resources)
+                    timeline = st.session_state.get("timeline") or []
+                    timeline.append({"step": next_step, "data": evo})
+                    matrix = update_state(matrix, evo, step_intervention)
+                    resources = update_resources(resources)
+                st.session_state.timeline = timeline
+                st.session_state.matrix_history = st.session_state.matrix_history + [matrix]
+                st.session_state.resources = st.session_state.resources + [resources]
+                st.session_state.stepping_matrix = matrix
+                st.session_state.stepping_resources = resources
+                st.session_state.stepping_infra = infra
+                st.session_state.stepping_current_step = next_step
+                if next_step >= eff:
+                    report = gen_report(event, facts, timeline, st.session_state.get("swan",""), matrix, resources)
+                    st.session_state.report = report
+                    st.session_state.sim_phase = "complete"
+                if sim_mode.startswith("高保真"):
+                    st.session_state.infra_history = st.session_state.get("infra_history") or []
+                    st.session_state.infra_history.append(infra)
+                st.rerun()
+    else:
+        if cur >= eff and not st.session_state.get("report"):
+            timeline = st.session_state.get("timeline") or []
+            m = st.session_state.stepping_matrix or (st.session_state.matrix_history[-1] if st.session_state.matrix_history else {})
+            r = st.session_state.stepping_resources or (st.session_state.resources[-1] if st.session_state.resources else {})
+            st.session_state.report = gen_report(event, facts, timeline, st.session_state.get("swan",""), m, r)
+            st.session_state.sim_phase = "complete"
         st.rerun()
 
 # 危机推演模式：完整展示
@@ -1313,6 +1481,35 @@ elif st.session_state.timeline:
         st.markdown(f"<div class='agent-card'><h4>👥 民众</h4><p>{last_evo.get('citizen', '—')}</p></div>", unsafe_allow_html=True)
     with a_cols[2]:
         st.markdown(f"<div class='agent-card'><h4>📺 媒体</h4><p>{last_evo.get('media', '—')}</p></div>", unsafe_allow_html=True)
+
+    # 4.1 与视角对话
+    st.divider()
+    st.subheader("💬 与视角对话")
+    st.caption("选择某一视角，向其提问，系统将基于该视角的立场与推演叙事作答")
+    if st.session_state.get("perspective_chat_history"):
+        if st.button("清空对话记录", key="clear_chat"):
+            st.session_state.perspective_chat_history = []
+            st.rerun()
+    chat_col1, chat_col2 = st.columns([1, 3])
+    with chat_col1:
+        chat_perspective = st.selectbox("选择视角", ["官方", "民众", "媒体", "审计"], key="chat_perspective")
+    with chat_col2:
+        chat_q = st.chat_input("输入您的问题，如：为什么采取这一策略？民众反应如何？")
+    if chat_q:
+        nav_map = {"官方": "official", "民众": "citizen", "媒体": "media", "审计": "audit"}
+        nav_key = nav_map.get(chat_perspective, "official")
+        narrative = last_evo.get(nav_key, "")
+        ctx = f"事件：{event}\n最终状态：{m}\n资源：{st.session_state.resources[-1] if st.session_state.resources else {}}"
+        reply = chat_with_perspective(chat_perspective, narrative, chat_q, ctx)
+        hist = st.session_state.get("perspective_chat_history") or []
+        hist.append({"role": "user", "content": chat_q, "perspective": chat_perspective})
+        hist.append({"role": "assistant", "content": reply, "perspective": chat_perspective})
+        st.session_state.perspective_chat_history = hist[-20:]
+        st.rerun()
+    for h in (st.session_state.get("perspective_chat_history") or []):
+        with st.chat_message("user" if h["role"] == "user" else "assistant"):
+            st.caption(f"【{h.get('perspective','')}视角】")
+            st.write(h["content"])
 
     # 5. 推演回放
     st.divider()
