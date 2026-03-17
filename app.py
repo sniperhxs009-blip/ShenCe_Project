@@ -235,23 +235,37 @@ if st.session_state.get("playback_index") is None or not isinstance(st.session_s
 _dbg("13-会话状态初始化")
 
 # --- 文档解析（种子上传）---
+def _decode_text(raw: bytes, max_len: int = 60000) -> str:
+    """TXT/MD 多编码尝试：utf-8、gbk、gb2312、big5，兼容中文文件。"""
+    for enc in ("utf-8", "gbk", "gb2312", "big5", "utf-16", "utf-16-le"):
+        try:
+            return raw.decode(enc, errors="strict")[:max_len]
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode("utf-8", errors="replace")[:max_len]
+
 def parse_uploaded_document(uploaded_file) -> str:
-    """解析上传的 PDF、TXT、DOCX、MD，返回纯文本。PDF 优先 PyMuPDF 以提升提取质量。"""
+    """解析上传的 PDF、TXT、DOCX、MD，返回纯文本。PDF 优先 PyMuPDF，Word 含表格提取。"""
     if not uploaded_file:
         return ""
     try:
         name = (uploaded_file.name or "").lower()
         raw = uploaded_file.read()
+        max_chars = 60000  # 支持较长报告（如年报）
+        max_pages = 120
+
         if name.endswith(".txt"):
-            return raw.decode("utf-8", errors="replace")[:25000]
+            return _decode_text(raw, max_chars)
         if name.endswith(".md") or name.endswith(".markdown"):
-            return raw.decode("utf-8", errors="replace")[:25000]
+            return _decode_text(raw, max_chars)
+
         if name.endswith(".pdf") and PDF_AVAILABLE:
             text_parts = []
             if PYMUPDF_AVAILABLE:
                 try:
                     doc = fitz.open(stream=raw, filetype="pdf")
-                    for i in range(min(doc.page_count, 35)):
+                    n_pages = min(doc.page_count, max_pages)
+                    for i in range(n_pages):
                         page = doc.load_page(i)
                         t = page.get_text("text", sort=True) or ""
                         if t.strip():
@@ -264,7 +278,7 @@ def parse_uploaded_document(uploaded_file) -> str:
                     from pypdf import PdfReader
                     reader = PdfReader(io.BytesIO(raw))
                     for i, p in enumerate(reader.pages):
-                        if i >= 35:
+                        if i >= max_pages:
                             break
                         t = p.extract_text() or ""
                         if t.strip():
@@ -272,30 +286,45 @@ def parse_uploaded_document(uploaded_file) -> str:
                 except Exception:
                     pass
             out = "\n\n".join(text_parts)
-            # OCR 兜底：文字极少（如扫描版）时尝试 OCR 前 5 页
+            # OCR 兜底：文字极少（如扫描版）时尝试 OCR
             if OCR_AVAILABLE and len(out.strip()) < 500:
                 try:
-                    images = convert_from_bytes(raw, first_page=1, last_page=min(5, 35), dpi=150)
+                    images = convert_from_bytes(raw, first_page=1, last_page=min(10, max_pages), dpi=150)
                     ocr_parts = []
                     for img in images:
                         ocr_text = pytesseract.image_to_string(img, lang="chi_sim+eng")
                         if ocr_text.strip():
                             ocr_parts.append(ocr_text)
                     if ocr_parts:
-                        out = "\n\n".join(ocr_parts)[:25000]
+                        out = "\n\n".join(ocr_parts)[:max_chars]
                 except Exception:
                     pass
-            return out[:25000] if out else ""
+            return out[:max_chars] if out else ""
         if name.endswith(".pdf") and not PDF_AVAILABLE:
             return "[PDF 解析需要安装 pypdf 或 pymupdf：pip install pymupdf]"
-        if (name.endswith(".docx") or name.endswith(".doc")) and DOCX_AVAILABLE:
+
+        if name.endswith(".docx") and DOCX_AVAILABLE:
             doc = DocxDocument(io.BytesIO(raw))
-            parts = [p.text for p in doc.paragraphs]
-            return "\n".join(parts)[:25000]
+            parts = []
+            for p in doc.paragraphs:
+                if p.text.strip():
+                    parts.append(p.text)
+            for tbl in doc.tables:
+                for row in tbl.rows:
+                    row_text = []
+                    for cell in row.cells:
+                        if cell.text and cell.text.strip():
+                            row_text.append(cell.text.strip())
+                    if row_text:
+                        parts.append(" | ".join(row_text))
+                parts.append("")  # 表格行间空行
+            return "\n".join(parts)[:max_chars]
         if (name.endswith(".docx") or name.endswith(".doc")) and not DOCX_AVAILABLE:
             return "[Word 解析需要安装 python-docx：pip install python-docx]"
+        if name.endswith(".doc"):
+            return "[仅支持 .docx 格式，请另存为 docx 后上传]"
     except Exception as e:
-        return f"[文档解析异常] {str(e)[:80]}"
+        return f"[文档解析异常] {str(e)[:120]}"
     return ""
 
 def fetch_url_as_seed(url: str) -> str:
@@ -1467,7 +1496,7 @@ if run and client and event:
                     s.update(label="📄 合并用户上传材料到实证上下文")
                     facts = f"""【用户上传的种子材料】
 ---
-{doc_text[:15000]}
+{doc_text[:28000]}
 ---
 【以上为种子材料】"""
                     evidence_items = []
