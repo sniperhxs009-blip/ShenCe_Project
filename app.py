@@ -12,30 +12,31 @@ import time
 
 # --- 页面配置 ---
 st.set_page_config(page_title="SHENCE 3.0 | 社会演化仿真旗舰版", layout="wide", initial_sidebar_state="expanded")
+
+# 恢复接近 Streamlit 默认的浅色背景，只保留少量卡片样式
 st.markdown("""
 <style>
-.block-container { max-width: 98% !important; padding: 1rem 2% !important; background-color: #0e1117; }
-.stMarkdown, p, h3, h2, h1 { color: #e0e0e0 !important; }
+.block-container { max-width: 98% !important; padding: 1rem 2% !important; }
 .metric-card { 
-    background-color: #161b22; padding: 20px; border-radius: 10px; 
-    border: 1px solid #30363d; text-align: center;
+    background-color: #f8f9fa; padding: 20px; border-radius: 10px; 
+    border: 1px solid #e0e0e0; text-align: center;
 }
 .logic-box { 
-    background-color: #0d1117; padding: 25px; border-left: 10px solid #58a6ff; 
+    background-color: #f8f9fa; padding: 25px; border-left: 10px solid #58a6ff; 
     border-radius: 6px; margin: 20px 0; font-family: 'Consolas', monospace; 
-    color: #8b949e; border: 1px solid #30363d;
+    color: #555555; border: 1px solid #e0e0e0;
 }
 .report-card { 
     background-color: #ffffff; padding: 40px; border-radius: 15px; color: #1a1a1a !important;
-    border-top: 15px solid #1f6feb; box-shadow: 0 10px 40px rgba(0,0,0,0.5); 
+    border-top: 15px solid #1f6feb; box-shadow: 0 10px 40px rgba(0,0,0,0.05); 
 }
 .agent-card {
-    background-color: #161b22; padding:15px; border-radius:10px; min-height:260px;
-    border:1px solid #30363d; margin-bottom:10px;
+    background-color: #ffffff; padding:15px; border-radius:10px; min-height:260px;
+    border:1px solid #e0e0e0; margin-bottom:10px;
 }
 .resource-card {
-    background-color: #161b22; padding:15px; border-radius:10px;
-    border:1px solid #30363d; margin-bottom:10px;
+    background-color: #ffffff; padding:15px; border-radius:10px;
+    border:1px solid #e0e0e0; margin-bottom:10px;
 }
 </style>
 """, unsafe_allow_html=True)
