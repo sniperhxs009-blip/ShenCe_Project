@@ -61,6 +61,11 @@ sim_mode = st.sidebar.selectbox(
     help="高保真模式：指标与资源由机制模型计算，AI 仅做文字解读并受审计约束；叙事模式：主要由模型生成并辅以随机扰动。"
 )
 seed = st.sidebar.number_input("随机种子（可复现）", min_value=0, max_value=10_000_000, value=2026, step=1)
+force_crisis_mode = st.sidebar.checkbox(
+    "强制危机推演模式",
+    value=False,
+    help="勾选后忽略智能判断，始终按政府/社会危机推演流程执行（即使输入是续写小说等）"
+)
 
 # --- 高保真参数校准面板 ---
 hf_default = {
@@ -954,6 +959,70 @@ def gen_report(event, facts, timeline, swan, matrix, resources):
     except Exception as e:
         return f"【报告生成异常】API 调用失败：{str(e)[:120]}\n请检查网络与 API 配置后重新运行仿真并导出报告。"
 
+def classify_event_relevance(event: str) -> dict:
+    """
+    智能化判断用户输入是否与政府政策、社会资源、公共危机相关。
+    若无关（如续写小说、一般创作），则不应启动危机推演模块。
+    返回 {"is_crisis_simulation": bool, "reason": str}
+    """
+    if not client:
+        return {"is_crisis_simulation": True, "reason": "无API时默认启用危机推演"}
+    prompt = """你是一个意图分类器。判断用户的输入是否适合进行「政府/社会危机推演仿真」。
+
+以下情况应返回 is_crisis_simulation=true：
+- 涉及政府应对、公共政策、社会资源调度
+- 涉及基础设施故障（停电/断水/通信/交通中断）
+- 涉及金融挤兑、供应链中断、民生保障
+- 涉及治安、秩序、救援、应急响应
+- 涉及民众恐慌、抢购、动荡等社会演化
+
+以下情况应返回 is_crisis_simulation=false：
+- 纯文学创作（续写小说、写诗、写故事）
+- 预测虚构作品的情节走向
+- 与政府/社会资源无关的创作、问答
+
+用户输入：「{event}」
+
+严格返回JSON，仅包含两个键：is_crisis_simulation（布尔）、reason（一句话说明原因，中文）""".format(event=(event or "")[:500])
+    try:
+        res = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            timeout=15,
+        )
+        j = safe_json(res.choices[0].message.content)
+        is_crisis = bool(j.get("is_crisis_simulation", True))
+        reason = str(j.get("reason", ""))[:200] or ("适合危机推演" if is_crisis else "与政府社会资源无关，采用创意模式")
+        return {"is_crisis_simulation": is_crisis, "reason": reason}
+    except Exception as e:
+        return {"is_crisis_simulation": True, "reason": f"分类异常，默认启用危机推演：{str(e)[:60]}"}
+
+def gen_creative_response(event: str) -> str:
+    """
+    当用户输入与政府/社会危机无关时，直接按用户意图完成任务（如续写、预测走向等）。
+    """
+    if not client:
+        return f"[需要配置 API] 您的请求：{event}\n\n系统判断该请求与政府社会危机推演无关，应直接完成您的创作或预测需求。请配置 API 后重试。"
+    prompt = f"""用户的请求与政府政策、社会资源、公共危机无关，请不要进行危机推演分析。
+
+用户请求：{event}
+
+请直接完成用户的请求。例如：
+- 若用户要求续写某作品：请按原著风格续写
+- 若用户要求预测故事走向：请给出合理的剧情预测
+- 若用户是其他创作类请求：请按用户意图完成
+
+输出应直接是用户所需的内容，无需额外说明或框架。"""
+    try:
+        return client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            timeout=90,
+        ).choices[0].message.content
+    except Exception as e:
+        return f"[生成异常] {str(e)[:120]}\n请检查 API 配置后重试。"
+
 def export_pdf(report):
     pdf = FPDF()
     pdf.add_page()
@@ -978,7 +1047,7 @@ event = st.text_area(
     "请自主描述您要推演的事件场景",
     value=st.session_state.get("event", ""),
     height=120,
-    placeholder="例如：一线城市核心区域停电停水 48 小时，通信不稳，民众恐慌抢购；或：粮食供应链中断 7 天，米面油库存下降，物价上涨……\n\n请自由描述事件的时间、地点、规模、影响范围等关键要素。"
+    placeholder="例如：一线城市核心区域停电停水 48 小时，通信不稳，民众恐慌抢购；或：粮食供应链中断 7 天，米面油库存下降，物价上涨……\n\n也可输入与政府社会无关的请求（如：请续写红楼梦、预测某故事走向），系统将智能识别并直接完成，不启动危机推演模块。"
 )
 
 # 控制面板
@@ -1024,98 +1093,115 @@ if st.session_state.get("reset_requested"):
 if run and client and event:
     try:
         random.seed(int(seed))
-        # 根据事件生成动态展示名称（资源与基础设施），体现真人分析般的灵活度
-        st.session_state.resource_display_map = select_resource_display_names(event, int(seed))
-        st.session_state.infra_display_map = select_infra_display_names(event, int(seed))
-        effective_steps = int(steps)
-        if sim_mode.startswith("高保真"):
-            hp = st.session_state.get("hf_params", {}) or {}
-            if hp.get("auto_steps_by_duration") and int(hp.get("total_duration_hours") or 0) > 0:
-                sh = float(hp.get("step_hours") or 12.0)
-                effective_steps = max(1, int(math.ceil(int(hp["total_duration_hours"]) / max(1.0, sh))))
-                # 防止一次跑太多导致耗时/费用过高（不影响原功能：只是高保真新增能力的保护）
-                if effective_steps > 24:
-                    effective_steps = 24
-        with st.status("✅ 仿真启动中...", expanded=True) as s:
-            s.update(label="🌐 检索实证案例")
-            facts, evidence_items = get_evidence_items(event)
-            st.session_state.facts = facts
-            st.session_state.evidence_items = evidence_items
-            factors, factor_map = extract_evidence_factors_from_items(evidence_items, facts)
-            st.session_state.evidence_factor_map = factor_map
-            st.session_state.decay_schedule = compute_decay_schedule(
-                evidence_items,
-                int(effective_steps),
-                float(st.session_state.hf_params.get("step_hours", 12.0)),
-                (st.session_state.hf_params.get("decay_scales") or {}),
-            )
-            st.session_state.time_axis = build_time_axis(
-                int(effective_steps),
-                float(st.session_state.hf_params.get("step_hours", 12.0)),
-                st.session_state.hf_params,
-            )
+        # 智能化判断：是否与政府/社会危机相关
+        if force_crisis_mode:
+            relevance = {"is_crisis_simulation": True, "reason": "用户强制启用危机推演模式"}
+        else:
+            relevance = classify_event_relevance(event)
+        st.session_state.event_relevance = relevance
 
-            s.update(label="📊 初始化社会矩阵")
-            matrix = init_state(event, facts)
-            st.session_state.matrix_history = [matrix]
-
-            s.update(label="🚚 初始化资源调度系统")
-            resources = init_resources()
-            st.session_state.resources = [resources]
-            st.session_state.audit_log = []
-            infra = init_infrastructure(factors)
-            st.session_state.infra_history = [infra]
-
-            s.update(label="🔗 生成因果链")
-            chain = gen_causal(event)
-            st.session_state.causal_chain = chain
-
-            s.update(label="🦢 生成黑天鹅")
-            swan = gen_black_swan(event) if enable_swan else "无黑天鹅"
-            st.session_state.swan = swan
-
-            s.update(label=f"🔄 执行 {effective_steps} 步演化")
-            timeline = []
-            for i in range(1, effective_steps+1):
-                if sim_mode.startswith("高保真"):
-                    prev = matrix
-                    matrix, resources, infra, audit = mechanistic_step(
-                        matrix,
-                        resources,
-                        factors,
-                        intervention,
-                        i,
-                        infra,
-                        st.session_state.hf_params,
-                        st.session_state.evidence_items,
-                        st.session_state.evidence_factor_map,
-                        st.session_state.decay_schedule,
-                        st.session_state.time_axis,
-                    )
-                    st.session_state.audit_log.append(audit)
-                    evo = narrate_from_mechanism(event, facts, i, intervention, matrix, prev, resources, audit)
-                    timeline.append({"step": i, "data": evo, "audit": audit, "state": matrix, "resources": resources, "infra": infra})
-                else:
-                    evo = evolve_step(event, facts, matrix, i, intervention, resources)
-                    timeline.append({"step": i, "data": evo})
-                    matrix = update_state(matrix, evo, intervention)
-                    resources = update_resources(resources)
-                st.session_state.matrix_history.append(matrix)
-                st.session_state.resources.append(resources)
-                if sim_mode.startswith("高保真"):
-                    st.session_state.infra_history.append(infra)
-                time.sleep(0.2)
-            st.session_state.timeline = timeline
-
-            s.update(label="📝 生成研判报告")
+        if not relevance["is_crisis_simulation"]:
+            # 创意模式：不启动政府/社会资源相关功能，直接完成用户请求
+            with st.status("✅ 智能识别为创意模式...", expanded=True) as s:
+                s.update(label="🧠 判定与政府社会资源无关，跳过危机推演")
+                st.session_state.run_mode = "creative"
+                st.session_state.creative_output = gen_creative_response(event)
+                s.update(label="✅ 完成", state="complete")
+            st.success("已完成！系统判断您的请求与政府/社会危机无关，已直接按您的要求生成内容。")
+        else:
+            # 危机推演模式：完整流程
+            st.session_state.run_mode = "crisis"
+            # 根据事件生成动态展示名称（资源与基础设施），体现真人分析般的灵活度
+            st.session_state.resource_display_map = select_resource_display_names(event, int(seed))
+            st.session_state.infra_display_map = select_infra_display_names(event, int(seed))
+            effective_steps = int(steps)
             if sim_mode.startswith("高保真"):
-                # 在高保真模式下，将审计日志拼入提示，强化“可追溯”
-                audit_summary = json.dumps(st.session_state.audit_log, ensure_ascii=False)
-                report = gen_report(event, facts + "\n\n[机制审计日志摘要]\n" + audit_summary[:2500], timeline, swan, matrix, resources)
-            else:
-                report = gen_report(event, facts, timeline, swan, matrix, resources)
-            st.session_state.report = report
-            s.update(label="✅ 仿真完成", state="complete")
+                hp = st.session_state.get("hf_params", {}) or {}
+                if hp.get("auto_steps_by_duration") and int(hp.get("total_duration_hours") or 0) > 0:
+                    sh = float(hp.get("step_hours") or 12.0)
+                    effective_steps = max(1, int(math.ceil(int(hp["total_duration_hours"]) / max(1.0, sh))))
+                    if effective_steps > 24:
+                        effective_steps = 24
+            with st.status("✅ 仿真启动中...", expanded=True) as s:
+                s.update(label="🌐 检索实证案例")
+                facts, evidence_items = get_evidence_items(event)
+                st.session_state.facts = facts
+                st.session_state.evidence_items = evidence_items
+                factors, factor_map = extract_evidence_factors_from_items(evidence_items, facts)
+                st.session_state.evidence_factor_map = factor_map
+                st.session_state.decay_schedule = compute_decay_schedule(
+                    evidence_items,
+                    int(effective_steps),
+                    float(st.session_state.hf_params.get("step_hours", 12.0)),
+                    (st.session_state.hf_params.get("decay_scales") or {}),
+                )
+                st.session_state.time_axis = build_time_axis(
+                    int(effective_steps),
+                    float(st.session_state.hf_params.get("step_hours", 12.0)),
+                    st.session_state.hf_params,
+                )
+
+                s.update(label="📊 初始化社会矩阵")
+                matrix = init_state(event, facts)
+                st.session_state.matrix_history = [matrix]
+
+                s.update(label="🚚 初始化资源调度系统")
+                resources = init_resources()
+                st.session_state.resources = [resources]
+                st.session_state.audit_log = []
+                infra = init_infrastructure(factors)
+                st.session_state.infra_history = [infra]
+
+                s.update(label="🔗 生成因果链")
+                chain = gen_causal(event)
+                st.session_state.causal_chain = chain
+
+                s.update(label="🦢 生成黑天鹅")
+                swan = gen_black_swan(event) if enable_swan else "无黑天鹅"
+                st.session_state.swan = swan
+
+                s.update(label=f"🔄 执行 {effective_steps} 步演化")
+                timeline = []
+                for i in range(1, effective_steps+1):
+                    if sim_mode.startswith("高保真"):
+                        prev = matrix
+                        matrix, resources, infra, audit = mechanistic_step(
+                            matrix,
+                            resources,
+                            factors,
+                            intervention,
+                            i,
+                            infra,
+                            st.session_state.hf_params,
+                            st.session_state.evidence_items,
+                            st.session_state.evidence_factor_map,
+                            st.session_state.decay_schedule,
+                            st.session_state.time_axis,
+                        )
+                        st.session_state.audit_log.append(audit)
+                        evo = narrate_from_mechanism(event, facts, i, intervention, matrix, prev, resources, audit)
+                        timeline.append({"step": i, "data": evo, "audit": audit, "state": matrix, "resources": resources, "infra": infra})
+                    else:
+                        evo = evolve_step(event, facts, matrix, i, intervention, resources)
+                        timeline.append({"step": i, "data": evo})
+                        matrix = update_state(matrix, evo, intervention)
+                        resources = update_resources(resources)
+                    st.session_state.matrix_history.append(matrix)
+                    st.session_state.resources.append(resources)
+                    if sim_mode.startswith("高保真"):
+                        st.session_state.infra_history.append(infra)
+                    time.sleep(0.2)
+                st.session_state.timeline = timeline
+
+                s.update(label="📝 生成研判报告")
+                if sim_mode.startswith("高保真"):
+                    # 在高保真模式下，将审计日志拼入提示，强化“可追溯”
+                    audit_summary = json.dumps(st.session_state.audit_log, ensure_ascii=False)
+                    report = gen_report(event, facts + "\n\n[机制审计日志摘要]\n" + audit_summary[:2500], timeline, swan, matrix, resources)
+                else:
+                    report = gen_report(event, facts, timeline, swan, matrix, resources)
+                st.session_state.report = report
+                s.update(label="✅ 仿真完成", state="complete")
             st.success("仿真完成！")
     except Exception as e:
         st.error(f"仿真流程异常：{str(e)}。请检查 API Key、Base URL 与网络后重试。")
@@ -1125,7 +1211,19 @@ if run and client and event:
             st.session_state.timeline = []
 
 # ---------------------- 结果展示 ----------------------
-if st.session_state.timeline:
+# 创意模式：与政府/社会资源无关，仅展示生成内容
+if st.session_state.get("run_mode") == "creative":
+    st.divider()
+    rel = st.session_state.get("event_relevance") or {}
+    st.info(f"🧠 **智能判断**：{rel.get('reason', '与政府社会资源无关')}\n\n以下政府/社会相关板块已跳过：资源调度、基础设施、社会矩阵、干预策略、演化推演等。")
+    st.subheader("📝 生成内容")
+    st.markdown(f"<div class='report-card'>{st.session_state.get('creative_output', '')}</div>", unsafe_allow_html=True)
+    if st.button("🔁 重置", key="reset_creative"):
+        request_reset()
+        st.rerun()
+
+# 危机推演模式：完整展示
+elif st.session_state.timeline:
     st.divider()
     st.subheader("📺 实时态势总面板")
 
