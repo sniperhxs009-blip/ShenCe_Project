@@ -196,6 +196,7 @@ init_keys = [
     "stepping_matrix", "stepping_resources", "stepping_infra", "stepping_factors",
     "perspective_chat_history",
     "scenario_branches", "current_branch_view", "entity_graph", "history_scenarios",
+    "uploaded_doc_meta",
 ]
 for k in init_keys:
     if k not in st.session_state:
@@ -209,6 +210,8 @@ for k in init_keys:
             st.session_state[k] = 0
         elif k == "sim_phase":
             st.session_state[k] = ""
+        elif k == "uploaded_doc_meta":
+            st.session_state[k] = {}
         else:
             st.session_state[k] = ""
 
@@ -269,6 +272,106 @@ def fetch_url_as_seed(url: str) -> str:
         return text[:12000]
     except Exception as e:
         return f"[URL 抓取异常] {str(e)[:80]}"
+
+def _extract_doc_meta_heuristic(doc_text: str) -> dict:
+    """启发式抽取文档元数据（企业名、报告年度、文档类型），无 API 时兜底。"""
+    text = (doc_text or "")[:5000]
+    meta = {"company_name": "", "report_year": "", "doc_type": "", "key_summary": ""}
+    # 年份：20xx年、202x年度、年度报告、二〇二x
+    years = re.findall(r"20[12][0-9]\s*年(?:度)?|截至\s*20[12][0-9]|20[12][0-9]\s*年度报告|20[12][0-9]\s*年\s*度|(20[12][0-9])\s*年", text)
+    if not years:
+        years = re.findall(r"二[〇零○0]二([〇一二三四五六七八九])\s*年", text)  # 二〇二五 等
+        if years:
+            cn_num = {"〇":"0","零":"0","○":"0","一":"1","二":"2","三":"3","四":"4","五":"5","六":"6","七":"7","八":"8","九":"9"}
+            digit = "".join(cn_num.get(c, c) for c in years[0])
+            meta["report_year"] = "202" + digit + "年"
+            years = [meta["report_year"]]  # 便于下方 break 逻辑
+    if years:
+        for y in years:
+            digit = re.search(r"20[12][0-9]", str(y))
+            if digit:
+                meta["report_year"] = digit.group(0) + "年"
+                break
+    # 企业名：前 2000 字内的 股份有限公司、集团有限公司、有限公司
+    company_pat = r"([\u4e00-\u9fa5A-Za-z0-9]{2,30}(?:股份有限公司|集团有限公司|有限公司|科技股份有限公司|实业有限公司))"
+    match = re.search(company_pat, text[:2500])
+    if match:
+        meta["company_name"] = match.group(1)
+    else:
+        # 备选：XXX 年报、XXX 财务报告
+        alt = re.search(r"([\u4e00-\u9fa5]{2,20})\s*(?:股份|集团)?\s*(?:20[12][0-9]\s*年)?(?:度)?\s*(?:财务)?报告", text[:1500])
+        if alt:
+            meta["company_name"] = alt.group(1)
+    if not meta["report_year"]:
+        meta["report_year"] = "未识别"
+    if any(k in text.lower() for k in ["年报", "年度报告", "财务报告", "财务报表"]):
+        meta["doc_type"] = "企业财务/年度报告"
+    else:
+        meta["doc_type"] = "上传材料"
+    meta["key_summary"] = text[:500].replace("\n", " ").strip()[:300] + "…"
+    return meta
+
+def extract_document_meta(doc_text: str, api_client) -> dict:
+    """
+    从种子上传文档中抽取核心元数据：企业名、报告年度、文档类型、关键要点。
+    若有 API 则用 LLM 精准抽取，否则用启发式规则兜底。
+    """
+    if not doc_text or doc_text.startswith("["):
+        return {}
+    text_sample = doc_text[:6000]
+    if api_client:
+        prompt = f"""从以下文档开头内容中，精确抽取核心信息。文档内容：
+---
+{text_sample}
+---
+
+严格返回JSON，且仅包含以下键（若无则填空字符串）：
+- company_name: 企业/公司全称（如 XX股份有限公司），必须是文档中实际出现的
+- report_year: 报告所属年度（如 2025年、2024年度），必须是文档中实际出现的，不要推测
+- doc_type: 文档类型（如 年度报告、财务报告、年报）
+- key_summary: 100字内的关键要点摘要（行业、主营、重要风险或指标）
+
+只输出JSON，无其他内容。"""
+        try:
+            res = api_client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                timeout=20,
+            )
+            j = safe_json(res.choices[0].message.content)
+            meta = {
+                "company_name": str(j.get("company_name", "") or "").strip(),
+                "report_year": str(j.get("report_year", "") or "").strip(),
+                "doc_type": str(j.get("doc_type", "") or "").strip(),
+                "key_summary": str(j.get("key_summary", "") or "").strip()[:200],
+            }
+            if not meta["company_name"] and not meta["report_year"]:
+                return _extract_doc_meta_heuristic(doc_text)
+            if not meta["report_year"]:
+                y = re.search(r"20[12][0-9]\s*年", doc_text[:3000])
+                if y:
+                    meta["report_year"] = y.group(0)
+            return meta
+        except Exception:
+            return _extract_doc_meta_heuristic(doc_text)
+    return _extract_doc_meta_heuristic(doc_text)
+
+def build_seed_doc_header(meta: dict) -> str:
+    """根据文档元数据构建置顶的种子材料核心信息块。"""
+    if not meta or (not meta.get("company_name") and not meta.get("report_year")):
+        return ""
+    parts = ["[种子材料核心信息 - 研判必须以此为准]"]
+    if meta.get("company_name"):
+        parts.append(f"企业/主体：{meta['company_name']}")
+    if meta.get("report_year"):
+        parts.append(f"报告年度：{meta['report_year']}")
+    if meta.get("doc_type"):
+        parts.append(f"文档类型：{meta['doc_type']}")
+    if meta.get("key_summary"):
+        parts.append(f"关键要点：{meta['key_summary']}")
+    parts.append("（以下所有分析与研判必须针对上述企业及年度，不得偏离或泛泛而谈）")
+    return "\n".join(parts) + "\n\n"
 
 # --- 核心工具函数 ---
 def safe_json(res):
@@ -963,7 +1066,11 @@ def _default_matrix():
     return {"行政效能": 50, "焦虑指数": 50, "资源缺口": 50, "动荡风险": 50}
 
 def init_state(event, facts):
-    prompt = f"事件：{event}\n事实：{facts}\n返回JSON（0-100）：行政效能、焦虑指数、资源缺口、动荡风险"
+    doc_meta = st.session_state.get("uploaded_doc_meta") or {}
+    ctx_note = ""
+    if doc_meta.get("company_name") or doc_meta.get("report_year"):
+        ctx_note = f"（种子上传材料：{doc_meta.get('company_name','')} {doc_meta.get('report_year','')}，初始化须基于该企业情境）"
+    prompt = f"事件：{event}\n事实：{facts}\n{ctx_note}\n返回JSON（0-100）：行政效能、焦虑指数、资源缺口、动荡风险"
     try:
         res = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}], response_format={"type":"json_object"})
         j = safe_json(res.choices[0].message.content)
@@ -1042,8 +1149,20 @@ def gen_causal(event):
         return f"[因果链生成异常] {str(e)[:100]}\n请检查 API 配置后重新运行。"
 
 def gen_report(event, facts, timeline, swan, matrix, resources):
+    doc_meta = st.session_state.get("uploaded_doc_meta") or {}
+    doc_constraint = ""
+    if doc_meta and (doc_meta.get("company_name") or doc_meta.get("report_year")):
+        company = doc_meta.get("company_name", "未知")
+        year = doc_meta.get("report_year", "未知")
+        doc_constraint = f"""
+【重要约束】种子上传了企业/主体材料：{company}，报告年度：{year}。
+研判报告必须针对该企业及该年度，分析结论必须与种子上传材料中的企业、行业、财务数据强相关。
+不得泛泛而谈、不得提及无关企业、不得使用错误的年度。报告开头应明确标注分析对象。
+
+"""
     prompt = f"""
 你是国家级战略安全顾问，生成正式研判报告：
+{doc_constraint}
 事件：{event}
 实证：{facts}
 演化时序：{timeline}
@@ -1273,6 +1392,17 @@ if uploaded_doc:
     st.session_state.uploaded_doc_text = doc_text
     if doc_text and not doc_text.startswith("["):
         st.caption(f"已解析 {len(doc_text)} 字符，将并入实证上下文")
+doc_text_uploaded = st.session_state.get("uploaded_doc_text") or ""
+if doc_text_uploaded and not doc_text_uploaded.startswith("[") and len(doc_text_uploaded) > 50:
+    if st.button("🔍 解析文档核心信息（企业/年度/要点）", key="parse_doc_meta_btn"):
+        with st.spinner("正在抽取企业名、报告年度..."):
+            meta = extract_document_meta(doc_text_uploaded, client)
+            st.session_state.uploaded_doc_meta = meta
+        st.success("解析完成")
+        st.rerun()
+    meta = st.session_state.get("uploaded_doc_meta") or {}
+    if meta and (meta.get("company_name") or meta.get("report_year")):
+        st.info(f"**已识别**：{meta.get('company_name','')} | {meta.get('report_year','')} | {meta.get('doc_type','')}")
 if not PDF_AVAILABLE:
     st.caption("💡 支持 PDF：pip install pypdf")
 if not DOCX_AVAILABLE:
@@ -1412,7 +1542,11 @@ if run and client and event:
                 facts, evidence_items = get_evidence_items(event)
                 doc_text = st.session_state.get("uploaded_doc_text") or ""
                 if doc_text and not doc_text.startswith("["):
-                    facts = (facts or "") + "\n\n[种子上传材料]\n" + doc_text[:8000]
+                    s.update(label="📄 解析种子上传文档（企业、年度、要点）")
+                    doc_meta = extract_document_meta(doc_text, client)
+                    st.session_state.uploaded_doc_meta = doc_meta
+                    seed_header = build_seed_doc_header(doc_meta)
+                    facts = (seed_header or "") + (facts or "") + "\n\n[种子上传材料全文]\n" + doc_text[:10000]
                 hist_ref = st.session_state.get("history_ref") or ""
                 if hist_ref:
                     facts = (facts or "") + "\n\n[历史推演参考]\n" + hist_ref
