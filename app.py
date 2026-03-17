@@ -1,17 +1,29 @@
+# ========== 调试定位：运行 streamlit run app.py 后，看终端打印停在哪一步 ==========
+import sys
+def _dbg(msg):
+    print(f">>> [{msg}]", flush=True)
+_dbg("1-开始导入")
+
 import streamlit as st
+_dbg("2-streamlit")
 from openai import OpenAI
+_dbg("3-openai")
 import json
 import os
+_dbg("4-json,os")
 import plotly.graph_objects as go
+_dbg("5-plotly")
 import requests
 import random
 from datetime import datetime
 import pandas as pd
+_dbg("6-pandas")
 from fpdf import FPDF
 import io
 import time
 import re
 import math
+_dbg("7-基础库完成")
 
 # PDF 解析（可选依赖）
 try:
@@ -26,9 +38,11 @@ try:
     DOCX_AVAILABLE = True
 except ImportError:
     DOCX_AVAILABLE = False
+_dbg("8-PDF/DOCX可选依赖")
 
 # --- 页面配置 ---
 st.set_page_config(page_title="SHENCE 3.0 | 社会演化仿真旗舰版", layout="wide", initial_sidebar_state="expanded")
+_dbg("9-set_page_config")
 
 # 恢复接近 Streamlit 默认的浅色背景，只保留少量卡片样式
 st.markdown("""
@@ -57,6 +71,7 @@ st.markdown("""
 }
 </style>
 """, unsafe_allow_html=True)
+_dbg("10-CSS样式")
 
 # --- 侧边栏 API ---
 st.sidebar.header("🔑 API 配置")
@@ -67,6 +82,7 @@ serper_key = st.sidebar.text_input("Serper API Key", type="password")
 client = None
 if openai_key:
     client = OpenAI(api_key=openai_key, base_url=base_url)
+_dbg("11-侧栏API区")
 
 # --- 仿真模式与可复现性 ---
 st.sidebar.header("🧪 仿真模式")
@@ -166,6 +182,7 @@ hf_params = {
         "governance_stress": decay_scale_governance_stress,
     },
 }
+_dbg("12-高保真参数")
 
 # --- 会话状态 ---
 init_keys = [
@@ -199,6 +216,7 @@ st.session_state.hf_params = hf_params
 
 if st.session_state.get("playback_index") is None or not isinstance(st.session_state.get("playback_index"), int):
     st.session_state.playback_index = 0
+_dbg("13-会话状态初始化")
 
 # --- 文档解析（种子上传）---
 def parse_uploaded_document(uploaded_file) -> str:
@@ -1233,6 +1251,7 @@ def export_pdf(report: str, doc_appendix: str = ""):
     return bytes(pdf.output(dest='S'))
 
 # ---------------------- 主界面 ----------------------
+_dbg("14-进入主界面")
 st.title("🛡️ SHENCE 3.0 | MiroFish 级社会演化仿真旗舰系统")
 
 # 可选：场景名称（用于报告与导出）
@@ -1260,6 +1279,7 @@ if not DOCX_AVAILABLE:
     st.caption("💡 支持 Word：pip install python-docx")
 
 # 多轮记忆：引用历史推演
+_dbg("15-加载历史文件")
 hist_list = _load_history_from_file()
 if hist_list:
     with st.expander("📚 引用历史推演", expanded=False):
@@ -1354,6 +1374,7 @@ if st.session_state.get("reset_requested"):
     st.rerun()
 
 # ---------------------- 仿真运行 ----------------------
+_dbg("16-仿真分支判断")
 if run and client and event:
     try:
         random.seed(int(seed))
@@ -1473,6 +1494,7 @@ if run and client and event:
             st.session_state.timeline = []
 
 # ---------------------- 结果展示 ----------------------
+_dbg("17-结果展示分支")
 # 创意模式：与政府/社会资源无关，仅展示生成内容
 if st.session_state.get("run_mode") == "creative":
     st.divider()
@@ -1921,3 +1943,4 @@ elif st.session_state.timeline:
 
 elif not client:
     st.warning("请在左侧填写 API Key 后启动仿真")
+_dbg("18-脚本执行完毕")
