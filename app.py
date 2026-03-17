@@ -865,8 +865,8 @@ def mechanistic_step(state: dict, resources: dict, factors: dict, intervention: 
     s2 = {}
     s2["行政效能"] = s["行政效能"] + shock_admin + restore - infra_admin_pen + random.uniform(-1.5, 1.5)
     s2["资源缺口"] = s["资源缺口"] + shock_gap - 6.0 * eff["restore"] * effect_scale + infra_gap_pen + random.uniform(-1.5, 1.5)
-    anxiety_boost = float(params.get("night_anxiety_boost", 0.25)) if (bool(params.get("circadian", True)) and is_night) else 0.0
-    risk_boost = float(params.get("night_risk_boost", 0.20)) if (bool(params.get("circadian", True)) and is_night) else 0.0
+    anxiety_boost = float(params.get("night_anxiety_boost", 0.25")) if (bool(params.get("circadian", True)) and is_night) else 0.0
+    risk_boost = float(params.get("night_risk_boost", 0.20")) if (bool(params.get("circadian", True)) and is_night) else 0.0
     s2["焦虑指数"] = s["焦虑指数"] + shock_anxiety * (1.0 + anxiety_boost) - calm + coupling_anxiety + infra_anx_pen + curfew_penalty + random.uniform(-2.0, 2.0)
     s2["动荡风险"] = s["动荡风险"] + shock_risk * (1.0 + risk_boost) - order + coupling_risk + random.uniform(-2.0, 2.0)
 
@@ -1089,33 +1089,6 @@ def gen_causal(event):
     except Exception as e:
         return f"[因果链生成异常] {str(e)[:100]}\n请检查 API 配置后重新运行。"
 
-# ====================== 【新增：根据上传文件生成报告】 ======================
-def gen_report_from_document(doc_text: str):
-    """直接根据上传的文件内容生成专业报告（无仿真流程）"""
-    prompt = f"""
-你是国家级战略安全顾问，根据用户上传的完整文档内容，生成正式、专业、结构化的研判报告。
-
-【用户上传文档全文】：
-{doc_text[:20000]}
-
-报告必须包含：
-1. 文档核心内容摘要
-2. 关键风险识别
-3. 社会/治理/资源影响分析
-4. 核心结论
-5. 对策与建议
-
-语言正式、严谨、结构化。
-"""
-    try:
-        return client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[{"role": "user", "content": prompt}],
-            timeout=90
-        ).choices[0].message.content
-    except Exception as e:
-        return f"【文档报告生成异常】API 调用失败：{str(e)[:120]}"
-
 def gen_report(event, facts, timeline, swan, matrix, resources):
     empirical = facts
     prompt = f"""
@@ -1134,8 +1107,7 @@ def gen_report(event, facts, timeline, swan, matrix, resources):
     try:
         return client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}], timeout=60).choices[0].message.content
     except Exception as e:
-        return f"【报告生成异常】API 调用失败：{str(e)[:120]}\n请检查网络与 API 配置后重试仿真并导出报告。"
-# ========================================================================
+        return f"【报告生成异常】API 调用失败：{str(e)[:120]}\n请检查网络与 API 配置后重试。"
 
 def classify_event_relevance(event: str) -> dict:
     """
@@ -1290,7 +1262,7 @@ def gen_creative_response(event: str) -> str:
     当用户输入与政府/社会危机无关时，直接按用户意图完成任务（如续写、预测走向等）。
     """
     if not client:
-        return f"[需要配置 API] 您的请求：{event}\n\n系统判断该请求与政府社会危机推演无关，应直接完成您的创作或预测需求。请配置 API 后重试。"
+        return f"[需要配置 API] 您的请求：{event}\n\n系统判断该请求与政府社会危机无关，应直接完成您的创作或预测需求。请配置 API 后重试。"
     prompt = f"""用户的请求与政府政策、社会资源、公共危机无关，请不要进行危机推演分析。
 
 用户请求：{event}
@@ -1352,39 +1324,21 @@ if uploaded_doc:
     st.session_state.uploaded_doc_text = doc_text
     if doc_text and not doc_text.startswith("["):
         st.caption(f"已解析 {len(doc_text)} 字符，将并入实证上下文")
+
+# ========== 【仅新增：文件内容预览】 ==========
+if "uploaded_doc_text" in st.session_state and st.session_state.uploaded_doc_text:
+    with st.expander("📄 上传文件内容预览", expanded=False):
+        preview_text = st.session_state.uploaded_doc_text
+        if len(preview_text) > 2000:
+            preview_text = preview_text[:2000] + "......（内容过长，已截断）"
+        st.text_area("文件内容", preview_text, height=200)
+
 if not PDF_AVAILABLE:
     st.caption("💡 支持 PDF：pip install pymupdf 或 pip install pypdf")
 if not OCR_AVAILABLE:
     st.caption("💡 扫描版 PDF 可启用 OCR：pip install pdf2image pytesseract（另需安装 Tesseract 程序）")
 if not DOCX_AVAILABLE:
     st.caption("💡 支持 Word：pip install python-docx")
-
-# ====================== 【新增：直接根据上传文件生成报告按钮】 ======================
-st.divider()
-st.subheader("📄 直接从上传文件生成报告（无需仿真）")
-doc_text_for_report = st.session_state.get("uploaded_doc_text", "")
-if doc_text_for_report and not doc_text_for_report.startswith("["):
-    if st.button("✅ 生成文件分析报告", type="primary", use_container_width=True):
-        with st.spinner("正在根据上传文件生成专业报告..."):
-            file_report = gen_report_from_document(doc_text_for_report)
-            st.session_state.uploaded_file_report = file_report
-            st.success("报告生成完成！")
-
-# 显示文件报告
-if "uploaded_file_report" in st.session_state and st.session_state.uploaded_file_report:
-    st.divider()
-    st.subheader("📝 上传文件分析报告")
-    st.markdown(f"<div class='report-card'>{st.session_state.uploaded_file_report}</div>", unsafe_allow_html=True)
-    # 导出文件报告
-    export_col1, export_col2 = st.columns(2)
-    with export_col1:
-        pdf_bytes = export_pdf(st.session_state.uploaded_file_report)
-        st.download_button("📄 导出PDF报告", pdf_bytes, "文件分析报告.pdf", use_container_width=True)
-    with export_col2:
-        if st.button("🔄 清空报告", use_container_width=True):
-            del st.session_state.uploaded_file_report
-            st.rerun()
-# ==================================================================================
 
 # 多轮记忆：引用历史推演
 _dbg("15-加载历史文件")
@@ -2021,7 +1975,7 @@ elif st.session_state.timeline:
     d_cols = st.columns(4)
     with d_cols[0]:
         doc_text = st.session_state.get("uploaded_doc_text") or ""
-        doc_summary = doc_text[:1500] + ("..." if len(doc_text) > 1500 else "") if doc_text and not doc_text.startswith("[") else ""
+        doc_summary = doc_text[:1500] + ("......（内容过长，已截断）" if len(doc_text) > 1500 else "") if doc_text and not doc_text.startswith("[") else ""
         json_data = json.dumps({
             "scenario_name": st.session_state.get("scenario_name", ""),
             "event": event, "facts": st.session_state.facts,
