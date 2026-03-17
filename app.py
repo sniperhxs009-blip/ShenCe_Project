@@ -1,6 +1,7 @@
 import streamlit as st
 from openai import OpenAI
 import json
+import os
 import plotly.graph_objects as go
 import requests
 import random
@@ -18,6 +19,13 @@ try:
     PDF_AVAILABLE = True
 except ImportError:
     PDF_AVAILABLE = False
+
+# Word 解析（可选依赖）
+try:
+    from docx import Document as DocxDocument
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
 
 # --- 页面配置 ---
 st.set_page_config(page_title="SHENCE 3.0 | 社会演化仿真旗舰版", layout="wide", initial_sidebar_state="expanded")
@@ -170,10 +178,13 @@ init_keys = [
     "uploaded_doc_text", "sim_phase", "stepping_current_step", "stepping_effective_steps",
     "stepping_matrix", "stepping_resources", "stepping_infra", "stepping_factors",
     "perspective_chat_history",
+    "scenario_branches", "current_branch_view", "entity_graph", "history_scenarios",
 ]
 for k in init_keys:
     if k not in st.session_state:
-        if k in ["timeline", "matrix_history", "audit_log", "evidence_items", "infra_history", "perspective_chat_history"]:
+        if k in ["timeline", "matrix_history", "audit_log", "evidence_items", "infra_history", "perspective_chat_history", "scenario_branches", "history_scenarios"]:
+            st.session_state[k] = []
+        elif k in ["history_scenarios"]:
             st.session_state[k] = []
         elif k in ["reset_requested", "autoplay_running"]:
             st.session_state[k] = False
@@ -191,27 +202,55 @@ if st.session_state.get("playback_index") is None or not isinstance(st.session_s
 
 # --- 文档解析（种子上传）---
 def parse_uploaded_document(uploaded_file) -> str:
-    """解析上传的 PDF 或 TXT，返回纯文本（用于补充 facts）。"""
+    """解析上传的 PDF、TXT、DOCX、MD，返回纯文本（用于补充 facts）。"""
     if not uploaded_file:
         return ""
     try:
         name = (uploaded_file.name or "").lower()
+        raw = uploaded_file.read()
         if name.endswith(".txt"):
-            return uploaded_file.read().decode("utf-8", errors="replace")[:15000]
+            return raw.decode("utf-8", errors="replace")[:15000]
+        if name.endswith(".md") or name.endswith(".markdown"):
+            return raw.decode("utf-8", errors="replace")[:15000]
         if name.endswith(".pdf") and PDF_AVAILABLE:
-            reader = PdfReader(io.BytesIO(uploaded_file.read()))
+            reader = PdfReader(io.BytesIO(raw))
             parts = []
             for i, p in enumerate(reader.pages):
-                if i >= 20:  # 限制页数
+                if i >= 20:
                     break
                 t = p.extract_text() or ""
                 parts.append(t)
             return "\n".join(parts)[:15000]
         if name.endswith(".pdf") and not PDF_AVAILABLE:
             return "[PDF 解析需要安装 pypdf：pip install pypdf]"
+        if (name.endswith(".docx") or name.endswith(".doc")) and DOCX_AVAILABLE:
+            doc = DocxDocument(io.BytesIO(raw))
+            parts = [p.text for p in doc.paragraphs]
+            return "\n".join(parts)[:15000]
+        if (name.endswith(".docx") or name.endswith(".doc")) and not DOCX_AVAILABLE:
+            return "[Word 解析需要安装 python-docx：pip install python-docx]"
     except Exception as e:
         return f"[文档解析异常] {str(e)[:80]}"
     return ""
+
+def fetch_url_as_seed(url: str) -> str:
+    """抓取网页内容作为种子，返回纯文本。"""
+    if not url or not url.strip():
+        return ""
+    url = url.strip()
+    if not url.startswith("http://") and not url.startswith("https://"):
+        url = "https://" + url
+    try:
+        r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0 (compatible; SHENCE/1.0)"})
+        r.raise_for_status()
+        html = r.text
+        text = re.sub(r"<script[^>]*>[\s\S]*?</script>", "", html, flags=re.I)
+        text = re.sub(r"<style[^>]*>[\s\S]*?</style>", "", text, flags=re.I)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:12000]
+    except Exception as e:
+        return f"[URL 抓取异常] {str(e)[:80]}"
 
 # --- 核心工具函数 ---
 def safe_json(res):
@@ -1040,6 +1079,90 @@ def classify_event_relevance(event: str) -> dict:
     except Exception as e:
         return {"is_crisis_simulation": True, "reason": f"分类异常，默认启用危机推演：{str(e)[:60]}"}
 
+def run_branch_from_step(fork_step: int, new_intervention: str, event: str, facts: str) -> dict:
+    """从第 fork_step 步之后用新干预策略继续推演，返回 branch 数据。"""
+    timeline = st.session_state.get("timeline") or []
+    mh = st.session_state.get("matrix_history") or []
+    rh = st.session_state.get("resources") or []
+    ih = st.session_state.get("infra_history") or []
+    idx = min(fork_step + 1, len(mh) - 1) if mh else 0
+    matrix = dict(mh[idx]) if idx < len(mh) and mh else {"行政效能":50,"焦虑指数":50,"资源缺口":50,"动荡风险":50}
+    resources = dict(rh[idx]) if idx < len(rh) and rh else {}
+    infra = dict(ih[idx]) if idx < len(ih) and ih else {"电力":80,"通信":80,"交通":80,"供水":80}
+    factors = st.session_state.get("init_factors") or st.session_state.get("stepping_factors")
+    if not factors or (isinstance(factors, dict) and "top_contributions" in factors):
+        factors = extract_evidence_factors(facts[:2000])
+    eff = int(st.session_state.get("stepping_effective_steps") or len(timeline))
+    branch_timeline = []
+    branch_matrix_hist = list(st.session_state.matrix_history[:fork_step+2])  # init + steps 1..fork_step+1
+    branch_resources = list(st.session_state.resources[:fork_step+2])
+    branch_infra = list((st.session_state.get("infra_history") or [])[:fork_step+2])
+    for i in range(fork_step + 2, eff + 1):  # 从 step fork_step+2 开始（即分支后的第一步）
+        if sim_mode.startswith("高保真"):
+            prev = matrix
+            matrix, resources, infra, audit = mechanistic_step(
+                matrix, resources, factors, new_intervention, i, infra,
+                st.session_state.hf_params, st.session_state.evidence_items,
+                st.session_state.evidence_factor_map, st.session_state.decay_schedule,
+                st.session_state.time_axis,
+            )
+            evo = narrate_from_mechanism(event, facts, i, new_intervention, matrix, prev, resources, audit)
+            branch_timeline.append({"step": i, "data": evo, "audit": audit, "state": matrix.copy(), "resources": resources.copy(), "infra": infra.copy()})
+        else:
+            evo = evolve_step(event, facts, matrix, i, new_intervention, resources)
+            branch_timeline.append({"step": i, "data": evo})
+            matrix = update_state(matrix, evo, new_intervention)
+            resources = update_resources(resources)
+        branch_matrix_hist.append(matrix.copy())
+        branch_resources.append(resources.copy())
+        if sim_mode.startswith("高保真"):
+            branch_infra.append(infra.copy())
+    full_tl = list(timeline[:fork_step+1]) + branch_timeline
+    report = gen_report(event, facts, full_tl, st.session_state.get("swan",""), matrix, resources)
+    return {"fork_step": fork_step, "intervention": new_intervention, "timeline": branch_timeline, "matrix_history": branch_matrix_hist, "resources": branch_resources, "infra_history": branch_infra, "report": report, "full_timeline": full_tl}
+
+def extract_entity_graph(event: str, facts: str) -> dict:
+    """从事件与实证中抽取实体与关系，构建简单知识图。"""
+    if not client:
+        return {"entities": [], "relations": []}
+    text = f"事件：{event}\n\n实证/背景：{(facts or '')[:3000]}"
+    prompt = f"""从以下文本中抽取关键实体（人物、组织、地点、资源、事件类型等）及其关系。
+
+文本：
+{text}
+
+严格返回JSON，格式：
+{{"entities": [{{"name": "实体名", "type": "人物|组织|地点|资源|事件"}}], "relations": [{{"source": "实体1", "target": "实体2", "relation": "关系描述"}}]}}
+
+每类实体最多5个，关系最多8条。只输出JSON，无其他内容。"""
+    try:
+        res = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}], response_format={"type": "json_object"}, timeout=15)
+        j = safe_json(res.choices[0].message.content)
+        return {"entities": j.get("entities", [])[:15], "relations": j.get("relations", [])[:12]}
+    except Exception:
+        return {"entities": [], "relations": []}
+
+HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shence_history.json")
+
+def _load_history_from_file() -> list:
+    try:
+        if os.path.exists(HISTORY_FILE):
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+def _save_to_history(scenario_name: str, event: str, report: str, matrix_history: list):
+    try:
+        rec = {"name": scenario_name or "未命名", "event": (event or "")[:200], "report_excerpt": (report or "")[:500], "final_state": matrix_history[-1] if matrix_history else {}, "ts": datetime.now().isoformat()}
+        hist = _load_history_from_file()
+        hist.append(rec)
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(hist[-50:], f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
 def chat_with_perspective(perspective: str, perspective_narrative: str, user_question: str, context: str) -> str:
     """与某一视角（官方/民众/媒体/审计）对话，基于其叙事与推演上下文回答。"""
     if not client:
@@ -1090,7 +1213,7 @@ def gen_creative_response(event: str) -> str:
     except Exception as e:
         return f"[生成异常] {str(e)[:120]}\n请检查 API 配置后重试。"
 
-def export_pdf(report):
+def export_pdf(report: str, doc_appendix: str = ""):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", size=12)
@@ -1098,6 +1221,15 @@ def export_pdf(report):
         pdf.multi_cell(0, 10, report)
     except Exception:
         pdf.multi_cell(0, 10, report.encode("latin-1", errors="replace").decode("latin-1"))
+    if doc_appendix and not doc_appendix.startswith("["):
+        pdf.add_page()
+        pdf.set_font("Arial", size=11, style="B")
+        pdf.multi_cell(0, 8, "Appendix: Seed Document Key Points / 种子材料要点")
+        pdf.set_font("Arial", size=10)
+        try:
+            pdf.multi_cell(0, 6, doc_appendix[:4000])
+        except Exception:
+            pdf.multi_cell(0, 6, doc_appendix[:4000].encode("latin-1", errors="replace").decode("latin-1"))
     return bytes(pdf.output(dest='S'))
 
 # ---------------------- 主界面 ----------------------
@@ -1110,16 +1242,36 @@ if scenario_name:
 
 # 文档种子上传（补充背景知识）
 st.subheader("📎 种子上传（可选）")
-uploaded_doc = st.file_uploader("上传 PDF 或 TXT 作为背景材料", type=["pdf", "txt"], help="如舆情报告、政策草案、小说片段等，将融入推演的知识上下文")
+uploaded_doc = st.file_uploader("上传 PDF、TXT、Word、Markdown 作为背景材料", type=["pdf", "txt", "docx", "md"], help="支持 .pdf .txt .docx .md，将融入推演的知识上下文")
+seed_url = st.text_input("或输入网页 URL 抓取内容", placeholder="https://...", key="seed_url_input")
+if st.button("🔄 加载网页", key="fetch_url_btn") and seed_url:
+    url_text = fetch_url_as_seed(seed_url)
+    st.session_state.uploaded_doc_text = url_text
+    if url_text and not url_text.startswith("["):
+        st.caption(f"已抓取 {len(url_text)} 字符")
 if uploaded_doc:
     doc_text = parse_uploaded_document(uploaded_doc)
     st.session_state.uploaded_doc_text = doc_text
     if doc_text and not doc_text.startswith("["):
         st.caption(f"已解析 {len(doc_text)} 字符，将并入实证上下文")
-else:
-    st.session_state.uploaded_doc_text = ""
 if not PDF_AVAILABLE:
-    st.caption("💡 支持 PDF 需安装：pip install pypdf")
+    st.caption("💡 支持 PDF：pip install pypdf")
+if not DOCX_AVAILABLE:
+    st.caption("💡 支持 Word：pip install python-docx")
+
+# 多轮记忆：引用历史推演
+hist_list = _load_history_from_file()
+if hist_list:
+    with st.expander("📚 引用历史推演", expanded=False):
+        hist_sel = st.selectbox("选择历史场景作为参考", [""] + [f"{h.get('name','')} - {h.get('event','')[:50]}..." for h in reversed(hist_list[-10:])], key="hist_ref")
+        if hist_sel and hist_sel != "":
+            opts = [f"{h.get('name','')} - {h.get('event','')[:50]}..." for h in reversed(hist_list[-10:])]
+            idx = opts.index(hist_sel) if hist_sel in opts else 0
+            ref = list(reversed(hist_list[-10:]))[idx]
+            st.info(f"**参考摘要**：{ref.get('report_excerpt','')[:300]}...")
+            st.session_state.history_ref = ref.get("report_excerpt", "")[:1500]
+        else:
+            st.session_state.history_ref = ""
 
 # 事件输入（自主输入，无需模板）
 st.subheader("📡 初始扰动事件")
@@ -1152,6 +1304,36 @@ with st.expander("⚙️ 仿真控制面板", expanded=True):
 - **全城宵禁**：强控动荡与行政，但会推高焦虑
 - **电力抢修**：优先恢复行政与秩序，缓解资源与动荡
         """)
+        # 干预策略成本与效果可视化
+        st.markdown("**📊 干预策略成本与效果对比**")
+        all_interventions = ["无","紧急物资投放","媒体安抚","加强安保","全城宵禁","电力抢修"]
+        resource_keys = ["警力","医疗","物资","电力","通信","交通"]
+        cost_data = {k: [] for k in resource_keys}
+        for inv in all_interventions:
+            prof = intervention_profile(inv)
+            for rk in resource_keys:
+                cost_data[rk].append(prof["cost"].get(rk, 0))
+        fig_cost = go.Figure()
+        colors_r = ["#58a6ff","#2ea043","#f85149","#f0883e","#a371f7","#8b949e"]
+        for i, rk in enumerate(resource_keys):
+            fig_cost.add_trace(go.Bar(name=rk, x=all_interventions, y=cost_data[rk], marker_color=colors_r[i]))
+        fig_cost.update_layout(barmode="stack", height=220, margin=dict(t=30,b=30), xaxis_tickangle=-25, legend=dict(orientation="h", y=1.1))
+        st.plotly_chart(fig_cost, use_container_width=True)
+        eff_data = {"calm":[], "order":[], "restore":[]}
+        for inv in all_interventions:
+            prof = intervention_profile(inv)
+            eff_data["calm"].append(round(prof["effect"]["calm"]*100))
+            eff_data["order"].append(round(prof["effect"]["order"]*100))
+            eff_data["restore"].append(round(prof["effect"]["restore"]*100))
+        fig_eff = go.Figure()
+        fig_eff.add_trace(go.Bar(name="降焦虑", x=all_interventions, y=eff_data["calm"], marker_color="#f8c447"))
+        fig_eff.add_trace(go.Bar(name="压动荡", x=all_interventions, y=eff_data["order"], marker_color="#e34c26"))
+        fig_eff.add_trace(go.Bar(name="恢复力", x=all_interventions, y=eff_data["restore"], marker_color="#58a6ff"))
+        fig_eff.update_layout(barmode="group", height=220, margin=dict(t=30,b=30), xaxis_tickangle=-25, yaxis_title="效果系数×100", legend=dict(orientation="h", y=1.1))
+        st.plotly_chart(fig_eff, use_container_width=True)
+    with st.expander("🦢 黑天鹅触发配置", expanded=False):
+        swan_trigger_step = st.selectbox("触发时机", [0,1,2,3,4,5,6,7,8], format_func=lambda x: "仿真开始时" if x==0 else f"第{x}步", index=0, key="swan_trigger_step")
+        swan_trigger_risk = st.slider("最低动荡阈值", 0, 95, 0, 5, help="0=不限制；>0 时仅当动荡风险≥该值才可能触发黑天鹅", key="swan_trigger_risk")
     st.caption(f"当前模式：{sim_mode}；随机种子：{seed}（相同输入 + 相同种子可复现演化轨迹）")
 
 # 启动按钮
@@ -1210,10 +1392,14 @@ if run and client and event:
                 doc_text = st.session_state.get("uploaded_doc_text") or ""
                 if doc_text and not doc_text.startswith("["):
                     facts = (facts or "") + "\n\n[种子上传材料]\n" + doc_text[:8000]
+                hist_ref = st.session_state.get("history_ref") or ""
+                if hist_ref:
+                    facts = (facts or "") + "\n\n[历史推演参考]\n" + hist_ref
                 st.session_state.facts = facts
                 st.session_state.evidence_items = evidence_items
                 factors, factor_map = extract_evidence_factors_from_items(evidence_items, facts)
                 st.session_state.evidence_factor_map = factor_map
+                st.session_state.init_factors = factors
                 st.session_state.decay_schedule = compute_decay_schedule(
                     evidence_items,
                     int(effective_steps),
@@ -1241,63 +1427,42 @@ if run and client and event:
                 chain = gen_causal(event)
                 st.session_state.causal_chain = chain
 
-                s.update(label="🦢 生成黑天鹅")
-                swan = gen_black_swan(event) if enable_swan else "无黑天鹅"
-                st.session_state.swan = swan
-
-                use_stepping = step_mode.startswith("逐步推演")
-                if use_stepping:
-                    st.session_state.sim_phase = "stepping"
-                    st.session_state.stepping_effective_steps = effective_steps
-                    st.session_state.stepping_current_step = 0
-                    st.session_state.timeline = []
-                    st.session_state.stepping_matrix = matrix
-                    st.session_state.stepping_resources = resources
-                    st.session_state.stepping_infra = infra
-                    st.session_state.stepping_factors = factors
-                    s.update(label="✅ 初始化完成，请逐步执行", state="complete")
+                swan_trigger_step = int(st.session_state.get("swan_trigger_step") or 0)
+                swan_trigger_risk = int(st.session_state.get("swan_trigger_risk") or 0)
+                if enable_swan and swan_trigger_step == 0:
+                    s.update(label="🦢 生成黑天鹅")
+                    swan = gen_black_swan(event)
+                    st.session_state.swan = swan
+                elif enable_swan and swan_trigger_step > 0:
+                    st.session_state.swan = f"待定（将在第{swan_trigger_step}步评估）"
+                    st.session_state.swan_trigger_step = swan_trigger_step
+                    st.session_state.swan_trigger_risk = swan_trigger_risk
                 else:
-                    s.update(label=f"🔄 执行 {effective_steps} 步演化")
-                    timeline = []
-                    for i in range(1, effective_steps+1):
-                        if sim_mode.startswith("高保真"):
-                            prev = matrix
-                            matrix, resources, infra, audit = mechanistic_step(
-                            matrix,
-                            resources,
-                            factors,
-                            intervention,
-                            i,
-                            infra,
-                            st.session_state.hf_params,
-                            st.session_state.evidence_items,
-                            st.session_state.evidence_factor_map,
-                            st.session_state.decay_schedule,
-                            st.session_state.time_axis,
-                        )
-                        st.session_state.audit_log.append(audit)
-                        evo = narrate_from_mechanism(event, facts, i, intervention, matrix, prev, resources, audit)
-                        timeline.append({"step": i, "data": evo, "audit": audit, "state": matrix, "resources": resources, "infra": infra})
-                    else:
-                        evo = evolve_step(event, facts, matrix, i, intervention, resources)
-                        timeline.append({"step": i, "data": evo})
-                        matrix = update_state(matrix, evo, intervention)
-                        resources = update_resources(resources)
-                    st.session_state.matrix_history.append(matrix)
-                    st.session_state.resources.append(resources)
-                    if sim_mode.startswith("高保真"):
-                        st.session_state.infra_history.append(infra)
-                    time.sleep(0.2)
-                st.session_state.timeline = timeline
+                    st.session_state.swan = "无黑天鹅"
+
+                use_stepping = True  # 逐步与连续均进控制台，支持暂停/继续
+                st.session_state.sim_phase = "stepping"
+                st.session_state.stepping_effective_steps = effective_steps
+                st.session_state.stepping_current_step = 0
+                st.session_state.stepping_matrix = matrix
+                st.session_state.stepping_resources = resources
+                st.session_state.stepping_infra = infra
+                st.session_state.stepping_factors = factors
+                st.session_state.timeline = []
+                st.session_state.continuous_mode = step_mode.startswith("连续运行")
+                st.session_state.continuous_auto_run = False
+                s.update(label="✅ 初始化完成，请在下方控制台逐步执行或连续运行", state="complete")
+                st.session_state.timeline = []
 
                 s.update(label="📝 生成研判报告")
                 if sim_mode.startswith("高保真"):
                     # 在高保真模式下，将审计日志拼入提示，强化“可追溯”
                     audit_summary = json.dumps(st.session_state.audit_log, ensure_ascii=False)
-                    report = gen_report(event, facts + "\n\n[机制审计日志摘要]\n" + audit_summary[:2500], timeline, swan, matrix, resources)
+                    report = gen_report(event, facts + "\n\n[机制审计日志摘要]\n" + audit_summary[:2500], timeline, st.session_state.get("swan",""), matrix, resources)
                 else:
-                    report = gen_report(event, facts, timeline, swan, matrix, resources)
+                    report = gen_report(event, facts, timeline, st.session_state.get("swan",""), matrix, resources)
                 st.session_state.report = report
+                _save_to_history(st.session_state.get("scenario_name",""), event, report, st.session_state.matrix_history)
                 s.update(label="✅ 仿真完成", state="complete")
             st.success("仿真完成！" if not use_stepping else "初始化完成，请在下方逐步推演并干预。")
     except Exception as e:
@@ -1319,7 +1484,7 @@ if st.session_state.get("run_mode") == "creative":
         request_reset()
         st.rerun()
 
-# 逐步推演模式：每步可干预
+# 逐步推演模式：每步可干预，支持连续运行的暂停/继续
 elif st.session_state.get("sim_phase") == "stepping" and st.session_state.get("run_mode") == "crisis":
     st.divider()
     st.subheader("⏳ 逐步推演控制台")
@@ -1331,56 +1496,97 @@ elif st.session_state.get("sim_phase") == "stepping" and st.session_state.get("r
     factors = st.session_state.get("stepping_factors") or {}
     facts = st.session_state.get("facts") or ""
     event = st.session_state.get("event") or ""
+    continuous_mode = st.session_state.get("continuous_mode", False)
+    continuous_auto_run = st.session_state.get("continuous_auto_run", False)
+
+    def _run_one_step(next_step, step_intervention, step_injected, matrix, resources, infra, factors):
+        event_ctx = event
+        if step_injected and str(step_injected).strip():
+            event_ctx = event + "\n[本步注入]" + str(step_injected).strip()
+            inj_factors = extract_evidence_factors(str(step_injected))
+            factors = {k: min(1.0, v + 0.25 * inj_factors.get(k, 0)) for k, v in factors.items()}
+        if sim_mode.startswith("高保真"):
+            prev = matrix
+            matrix, resources, infra, audit = mechanistic_step(
+                matrix, resources, factors, step_intervention, next_step, infra,
+                st.session_state.hf_params, st.session_state.evidence_items,
+                st.session_state.evidence_factor_map, st.session_state.decay_schedule,
+                st.session_state.time_axis,
+            )
+            st.session_state.audit_log.append(audit)
+            evo = narrate_from_mechanism(event_ctx, facts, next_step, step_intervention, matrix, prev, resources, audit)
+            timeline = st.session_state.get("timeline") or []
+            timeline.append({"step": next_step, "data": evo, "audit": audit, "state": matrix, "resources": resources, "infra": infra})
+        else:
+            evo = evolve_step(event_ctx, facts, matrix, next_step, step_intervention, resources)
+            timeline = st.session_state.get("timeline") or []
+            timeline.append({"step": next_step, "data": evo})
+            matrix = update_state(matrix, evo, step_intervention)
+            resources = update_resources(resources)
+        st.session_state.timeline = timeline
+        st.session_state.matrix_history = st.session_state.matrix_history + [matrix]
+        st.session_state.resources = st.session_state.resources + [resources]
+        st.session_state.stepping_matrix = matrix
+        st.session_state.stepping_resources = resources
+        st.session_state.stepping_infra = infra
+        st.session_state.stepping_current_step = next_step
+        swan_step = int(st.session_state.get("swan_trigger_step") or 0)
+        swan_risk = int(st.session_state.get("swan_trigger_risk") or 0)
+        if enable_swan and swan_step > 0 and next_step == swan_step:
+            if swan_risk == 0 or matrix.get("动荡风险", 0) >= swan_risk:
+                st.session_state.swan = gen_black_swan(event)
+            else:
+                st.session_state.swan = "无黑天鹅（动荡未达阈值）"
+        if next_step >= eff:
+            report = gen_report(event, facts, st.session_state.timeline, st.session_state.get("swan",""), matrix, resources)
+            st.session_state.report = report
+            _save_to_history(st.session_state.get("scenario_name",""), event, report, st.session_state.matrix_history)
+            st.session_state.sim_phase = "complete"
+        if sim_mode.startswith("高保真"):
+            st.session_state.infra_history = st.session_state.get("infra_history") or []
+            st.session_state.infra_history.append(infra)
+        return matrix, resources, infra
+
+    # 连续模式自动步进：在渲染前执行一步，渲染后根据是否继续决定是否 rerun
+    if continuous_mode and continuous_auto_run and cur < eff and matrix:
+        step_intervention = st.session_state.get("step_intervention", "无")
+        step_injected = st.session_state.get("step_injected", "") or ""
+        next_step = cur + 1
+        with st.spinner(f"连续运行中：第 {next_step}/{eff} 步..."):
+            _run_one_step(next_step, step_intervention, step_injected, matrix, resources, infra, factors)
+        cur = st.session_state.stepping_current_step
+        matrix = st.session_state.stepping_matrix
+        resources = st.session_state.stepping_resources
+        infra = st.session_state.stepping_infra
 
     if cur < eff and matrix:
         next_step = cur + 1
-        st.info(f"将执行第 **{next_step}** 步（共 {eff} 步）")
+        st.info(f"将执行第 **{next_step}** 步（共 {eff} 步）" + ("（连续运行中，可随时⏸️暂停）" if continuous_mode and continuous_auto_run else ""))
         step_col1, step_col2 = st.columns(2)
         with step_col1:
             step_intervention = st.selectbox("本步干预策略", ["无","紧急物资投放","媒体安抚","加强安保","全城宵禁","电力抢修"], key="step_intervention")
         with step_col2:
             step_injected = st.text_input("注入事件（可选）", placeholder="如：突发火灾、谣言扩散等，留空则无", key="step_injected")
-        step_next = st.button("▶️ 执行下一步", type="primary", key="step_next_btn")
+        btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 1])
+        with btn_col1:
+            step_next = st.button("▶️ 执行下一步", type="primary", key="step_next_btn")
+        with btn_col2:
+            run_rest = st.button(f"▶️ 连续运行剩余{eff - cur}步", key="continuous_run_btn") if continuous_mode else False
+        with btn_col3:
+            if continuous_mode and continuous_auto_run:
+                if st.button("⏸️ 暂停", key="pause_btn"):
+                    st.session_state.continuous_auto_run = False
+                    st.rerun()
         if step_next:
             with st.spinner(f"正在执行第 {next_step} 步..."):
-                event_ctx = event
-                if step_injected and step_injected.strip():
-                    event_ctx = event + "\n[本步注入]" + step_injected.strip()
-                    inj_factors = extract_evidence_factors(step_injected)
-                    factors = {k: min(1.0, v + 0.25 * inj_factors.get(k, 0)) for k, v in factors.items()}
-                if sim_mode.startswith("高保真"):
-                    prev = matrix
-                    matrix, resources, infra, audit = mechanistic_step(
-                        matrix, resources, factors, step_intervention, next_step, infra,
-                        st.session_state.hf_params, st.session_state.evidence_items,
-                        st.session_state.evidence_factor_map, st.session_state.decay_schedule,
-                        st.session_state.time_axis,
-                    )
-                    st.session_state.audit_log.append(audit)
-                    evo = narrate_from_mechanism(event_ctx, facts, next_step, step_intervention, matrix, prev, resources, audit)
-                    timeline = st.session_state.get("timeline") or []
-                    timeline.append({"step": next_step, "data": evo, "audit": audit, "state": matrix, "resources": resources, "infra": infra})
-                else:
-                    evo = evolve_step(event_ctx, facts, matrix, next_step, step_intervention, resources)
-                    timeline = st.session_state.get("timeline") or []
-                    timeline.append({"step": next_step, "data": evo})
-                    matrix = update_state(matrix, evo, step_intervention)
-                    resources = update_resources(resources)
-                st.session_state.timeline = timeline
-                st.session_state.matrix_history = st.session_state.matrix_history + [matrix]
-                st.session_state.resources = st.session_state.resources + [resources]
-                st.session_state.stepping_matrix = matrix
-                st.session_state.stepping_resources = resources
-                st.session_state.stepping_infra = infra
-                st.session_state.stepping_current_step = next_step
-                if next_step >= eff:
-                    report = gen_report(event, facts, timeline, st.session_state.get("swan",""), matrix, resources)
-                    st.session_state.report = report
-                    st.session_state.sim_phase = "complete"
-                if sim_mode.startswith("高保真"):
-                    st.session_state.infra_history = st.session_state.get("infra_history") or []
-                    st.session_state.infra_history.append(infra)
-                st.rerun()
+                _run_one_step(next_step, step_intervention, step_injected, matrix, resources, infra, factors)
+            st.rerun()
+        if continuous_mode and run_rest:
+            st.session_state.continuous_auto_run = True
+            st.rerun()
+        # 连续模式：若自动运行中且还有剩余步数，自动触发下一轮以继续推演
+        if continuous_mode and continuous_auto_run and cur < eff:
+            st.rerun()
     else:
         if cur >= eff and not st.session_state.get("report"):
             timeline = st.session_state.get("timeline") or []
@@ -1470,6 +1676,34 @@ elif st.session_state.timeline:
     key_cols[2].metric("最终行政效能", f"{m['行政效能']}%", "当前步")
     key_cols[3].metric("最终资源缺口", f"{m['资源缺口']}%", "当前步")
 
+    # 3.2 分支对比（如有分支）
+    branches = st.session_state.get("scenario_branches") or []
+    if branches:
+        st.subheader("🌿 分支对比")
+        tab_names = ["主路径"] + [b.get("name", f"分支{i+1}") for i, b in enumerate(branches)]
+        tabs = st.tabs(tab_names)
+        with tabs[0]:
+            df_main = pd.DataFrame(st.session_state.matrix_history)
+            fig = go.Figure()
+            for idx, col in enumerate(df_main.columns):
+                fig.add_trace(go.Scatter(y=df_main[col], name=col, line=dict(color=colors[idx % len(colors)])))
+            fig.update_layout(height=280, title="主路径指标演化")
+            st.plotly_chart(fig, use_container_width=True)
+        for i, b in enumerate(branches):
+            with tabs[i + 1]:
+                df_b = pd.DataFrame(b.get("matrix_history", []))
+                if not df_b.empty:
+                    fig_b = go.Figure()
+                    for idx, col in enumerate(df_b.columns):
+                        fig_b.add_trace(go.Scatter(y=df_b[col], name=col, line=dict(color=colors[idx % len(colors)])))
+                    fig_b.update_layout(height=280, title=f"分支：{b.get('intervention','')}")
+                    st.plotly_chart(fig_b, use_container_width=True)
+                st.caption(f"从第 {b.get('fork_step',0)+1} 步起采用「{b.get('intervention','')}」")
+                if st.button(f"删除此分支", key=f"del_branch_{i}"):
+                    branches.pop(i)
+                    st.session_state.scenario_branches = branches
+                    st.rerun()
+
     # 4. 多智能体对抗视图
     st.divider()
     st.subheader("🏛️ 多智能体对抗视图")
@@ -1482,33 +1716,41 @@ elif st.session_state.timeline:
     with a_cols[2]:
         st.markdown(f"<div class='agent-card'><h4>📺 媒体</h4><p>{last_evo.get('media', '—')}</p></div>", unsafe_allow_html=True)
 
-    # 4.1 与视角对话
+    # 4.1 与视角对话（支持按步选择）
     st.divider()
     st.subheader("💬 与视角对话")
-    st.caption("选择某一视角，向其提问，系统将基于该视角的立场与推演叙事作答")
+    st.caption("选择步骤与视角，向该步骤下的该视角提问；系统基于该步的叙事与立场作答")
     if st.session_state.get("perspective_chat_history"):
         if st.button("清空对话记录", key="clear_chat"):
             st.session_state.perspective_chat_history = []
             st.rerun()
-    chat_col1, chat_col2 = st.columns([1, 3])
+    tl = st.session_state.get("timeline") or []
+    max_step_idx = len(tl) - 1
+    chat_col1, chat_col2, chat_col3 = st.columns([1, 1, 2])
     with chat_col1:
-        chat_perspective = st.selectbox("选择视角", ["官方", "民众", "媒体", "审计"], key="chat_perspective")
+        chat_step_options = [f"第{i+1}步" for i in range(max_step_idx + 1)]
+        chat_step_idx = st.selectbox("选择步骤", range(max_step_idx + 1), format_func=lambda x: chat_step_options[x], key="chat_step_select")
     with chat_col2:
+        chat_perspective = st.selectbox("选择视角", ["官方", "民众", "媒体", "审计"], key="chat_perspective")
+    with chat_col3:
         chat_q = st.chat_input("输入您的问题，如：为什么采取这一策略？民众反应如何？")
     if chat_q:
         nav_map = {"官方": "official", "民众": "citizen", "媒体": "media", "审计": "audit"}
         nav_key = nav_map.get(chat_perspective, "official")
-        narrative = last_evo.get(nav_key, "")
-        ctx = f"事件：{event}\n最终状态：{m}\n资源：{st.session_state.resources[-1] if st.session_state.resources else {}}"
+        step_data = tl[chat_step_idx]["data"] if chat_step_idx < len(tl) else last_evo
+        narrative = step_data.get(nav_key, "")
+        step_state = tl[chat_step_idx].get("state", m) if chat_step_idx < len(tl) and "state" in tl[chat_step_idx] else m
+        step_res = tl[chat_step_idx].get("resources", st.session_state.resources[-1]) if chat_step_idx < len(tl) and "resources" in tl[chat_step_idx] else (st.session_state.resources[chat_step_idx] if chat_step_idx < len(st.session_state.resources) else st.session_state.resources[-1])
+        ctx = f"事件：{event}\n第{chat_step_idx+1}步状态：{step_state}\n资源：{step_res}"
         reply = chat_with_perspective(chat_perspective, narrative, chat_q, ctx)
         hist = st.session_state.get("perspective_chat_history") or []
-        hist.append({"role": "user", "content": chat_q, "perspective": chat_perspective})
-        hist.append({"role": "assistant", "content": reply, "perspective": chat_perspective})
+        hist.append({"role": "user", "content": chat_q, "perspective": chat_perspective, "step": chat_step_idx + 1})
+        hist.append({"role": "assistant", "content": reply, "perspective": chat_perspective, "step": chat_step_idx + 1})
         st.session_state.perspective_chat_history = hist[-20:]
         st.rerun()
     for h in (st.session_state.get("perspective_chat_history") or []):
         with st.chat_message("user" if h["role"] == "user" else "assistant"):
-            st.caption(f"【{h.get('perspective','')}视角】")
+            st.caption(f"【第{h.get('step','')}步·{h.get('perspective','')}视角】")
             st.write(h["content"])
 
     # 5. 推演回放
@@ -1533,14 +1775,69 @@ elif st.session_state.timeline:
         st.session_state.autoplay_running = True
         st.session_state.playback_index = 0
         st.rerun()
-    # 同步 slider 与 session 的 playback_index
     st.session_state.playback_index = playback
     play_data = st.session_state.timeline[playback]["data"]
+    # 场景分支：从当前步创建分支
+    with st.expander("🌿 从本步创建分支（对比不同干预路径）", expanded=False):
+        branch_interv = st.selectbox("假设从本步起改用干预策略", ["无","紧急物资投放","媒体安抚","加强安保","全城宵禁","电力抢修"], key="branch_intervention")
+        branch_name = st.text_input("分支名称（可选）", value=f"第{playback+1}步起→{branch_interv}", key="branch_name")
+        if st.button("创建并推演分支", key="create_branch_btn"):
+            with st.spinner("正在推演分支..."):
+                branch_data = run_branch_from_step(playback, branch_interv, event, st.session_state.get("facts",""))
+                branch_data["name"] = branch_name or f"分支-第{playback+1}步起→{branch_interv}"
+                st.session_state.scenario_branches = st.session_state.get("scenario_branches") or []
+                st.session_state.scenario_branches.append(branch_data)
+                st.success(f"分支「{branch_name}」推演完成，可在下方查看对比")
+                st.rerun()
     st.info(f"📌 第 {playback+1} 阶段 演化内容")
     st.markdown(f"**官方**：{play_data.get('official', '—')}")
     st.markdown(f"**民众**：{play_data.get('citizen', '—')}")
     st.markdown(f"**媒体**：{play_data.get('media', '—')}")
     st.markdown(f"**审计**：{play_data.get('audit', '—')}")
+
+    # 5.1 实体与知识图
+    with st.expander("🕸️ 实体与知识图谱", expanded=False):
+        if st.button("提取实体与关系", key="extract_entities_btn"):
+            with st.spinner("正在抽取..."):
+                eg = extract_entity_graph(event, st.session_state.get("facts",""))
+                st.session_state.entity_graph = eg
+        eg = st.session_state.get("entity_graph") or {}
+        if eg.get("entities") or eg.get("relations"):
+            e_col1, e_col2 = st.columns(2)
+            with e_col1:
+                st.markdown("**实体**")
+                for ent in eg.get("entities", []):
+                    st.write(f"- {ent.get('name','')}（{ent.get('type','')}）")
+            with e_col2:
+                st.markdown("**关系**")
+                for rel in eg.get("relations", []):
+                    st.write(f"- {rel.get('source','')} → {rel.get('target','')}：{rel.get('relation','')}")
+            # 简单网络图（需 networkx，可选）
+            try:
+                import networkx as nx
+                G = nx.DiGraph()
+                for e in eg.get("entities", []):
+                    G.add_node(e.get("name", ""), type=e.get("type", ""))
+                for r in eg.get("relations", []):
+                    G.add_edge(r.get("source",""), r.get("target",""), label=r.get("relation",""))
+                if G.number_of_nodes() > 0:
+                    pos = nx.spring_layout(G, seed=42)
+                    edge_trace = go.Scatter(x=[], y=[], line=dict(width=1, color="#888"), hoverinfo="text", mode="lines")
+                    node_trace = go.Scatter(x=[], y=[], text=[], mode="markers+text", marker=dict(size=20, color="#58a6ff"), textposition="top center")
+                    for e in G.edges():
+                        x0, y0 = pos[e[0]]
+                        x1, y1 = pos[e[1]]
+                        edge_trace["x"] += (x0, x1, None)
+                        edge_trace["y"] += (y0, y1, None)
+                    for n in G.nodes():
+                        node_trace["x"] += (pos[n][0],)
+                        node_trace["y"] += (pos[n][1],)
+                        node_trace["text"] += (n,)
+                    fig_g = go.Figure(data=[edge_trace, node_trace])
+                    fig_g.update_layout(title="知识图谱", showlegend=False, height=300)
+                    st.plotly_chart(fig_g, use_container_width=True)
+            except ImportError:
+                st.caption("安装 networkx 可显示图谱：pip install networkx")
 
     # 6. 因果链 + 黑天鹅
     st.divider()
@@ -1585,12 +1882,15 @@ elif st.session_state.timeline:
     # 导出区
     d_cols = st.columns(4)
     with d_cols[0]:
+        doc_text = st.session_state.get("uploaded_doc_text") or ""
+        doc_summary = doc_text[:1500] + ("..." if len(doc_text) > 1500 else "") if doc_text and not doc_text.startswith("[") else ""
         json_data = json.dumps({
             "scenario_name": st.session_state.get("scenario_name", ""),
             "event": event, "facts": st.session_state.facts,
             "matrix": st.session_state.matrix_history,
             "timeline": st.session_state.timeline,
             "report": st.session_state.report,
+            "seed_document_summary": doc_summary,
             "audit_log": st.session_state.get("audit_log", []),
             "evidence_items": st.session_state.get("evidence_items", []),
             "evidence_factor_map": st.session_state.get("evidence_factor_map", {}),
@@ -1610,7 +1910,10 @@ elif st.session_state.timeline:
         st.download_button("📊 导出指标CSV", csv_df.to_csv(index=False).encode("utf-8-sig"), fname_csv, "text/csv", use_container_width=True)
     with d_cols[2]:
         pdf_report = (report_title + st.session_state.report) if st.session_state.get("scenario_name") else st.session_state.report
-        st.download_button("📄 导出PDF报告", export_pdf(pdf_report), (st.session_state.get("scenario_name") or "SHENCE").replace(" ", "_") + "_研判报告.pdf", use_container_width=True)
+        pdf_doc_appendix = (st.session_state.get("uploaded_doc_text") or "")[:4000]
+        if pdf_doc_appendix and pdf_doc_appendix.startswith("["):
+            pdf_doc_appendix = ""
+        st.download_button("📄 导出PDF报告", export_pdf(pdf_report, pdf_doc_appendix), (st.session_state.get("scenario_name") or "SHENCE").replace(" ", "_") + "_研判报告.pdf", use_container_width=True)
     with d_cols[3]:
         if st.button("🔁 重置仿真", use_container_width=True, key="reset_bottom"):
             request_reset()
