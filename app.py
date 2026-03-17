@@ -45,6 +45,15 @@ try:
     DOCX_AVAILABLE = True
 except ImportError:
     DOCX_AVAILABLE = False
+
+# OCR 兜底（扫描版 PDF 文字极少时启用）
+OCR_AVAILABLE = False
+try:
+    import pytesseract
+    from pdf2image import convert_from_bytes
+    OCR_AVAILABLE = True
+except ImportError:
+    pass
 _dbg("8-PDF/DOCX可选依赖")
 
 # --- 页面配置 ---
@@ -266,6 +275,19 @@ def parse_uploaded_document(uploaded_file) -> str:
                 except Exception:
                     pass
             out = "\n\n".join(text_parts)
+            # OCR 兜底：文字极少（如扫描版）时尝试 OCR 前 5 页
+            if OCR_AVAILABLE and len(out.strip()) < 500:
+                try:
+                    images = convert_from_bytes(raw, first_page=1, last_page=min(5, 35), dpi=150)
+                    ocr_parts = []
+                    for img in images:
+                        ocr_text = pytesseract.image_to_string(img, lang="chi_sim+eng")
+                        if ocr_text.strip():
+                            ocr_parts.append(ocr_text)
+                    if ocr_parts:
+                        out = "\n\n".join(ocr_parts)[:25000]
+                except Exception:
+                    pass
             return out[:25000] if out else ""
         if name.endswith(".pdf") and not PDF_AVAILABLE:
             return "[PDF 解析需要安装 pypdf 或 pymupdf：pip install pymupdf]"
@@ -299,12 +321,12 @@ def fetch_url_as_seed(url: str) -> str:
         return f"[URL 抓取异常] {str(e)[:80]}"
 
 def _heuristic_extract_subject(text: str) -> dict:
-    """无 API 时用正则从文档前 4000 字提取企业名与年度。"""
+    """无 API 时用正则从文档前 4000 字提取。"""
     t = (text or "")[:4000]
-    out = {"company": "", "year": ""}
+    out = {"company": "", "year": "", "org": "", "doc_type": "", "key_points": ""}
     m = re.search(r"([\u4e00-\u9fa5A-Za-z0-9]{2,28}(?:股份有限公司|集团有限公司|有限公司))", t)
     if m:
-        out["company"] = m.group(1)
+        out["company"] = out["org"] = m.group(1)
     for y in re.findall(r"20[12][0-9]\s*年(?:度)?|二[〇零○]二[〇一二三四五六七八九]\s*年", t):
         digit = re.search(r"20[12][0-9]", y)
         if digit:
@@ -316,48 +338,59 @@ def _heuristic_extract_subject(text: str) -> dict:
             if len(d) == 1:
                 out["year"] = "202" + d + "年"
                 break
+    if "政策" in t or "办法" in t or "通知" in t or "条例" in t:
+        out["doc_type"] = "政策文件"
+    elif "年报" in t or "年度报告" in t or "财务" in t:
+        out["doc_type"] = "企业报告"
+    out["key_points"] = t[:400].replace("\n", " ").strip()[:200]
     return out
 
-def auto_extract_doc_subject(doc_text: str, api_client) -> dict:
+def document_understanding(doc_text: str, api_client) -> dict:
     """
-    自动从文档中识别分析对象（企业名、年度）。
-    独立调用：只传入文档，无其他上下文，避免模型受干扰。
+    专职文档理解：仅传入文档，无其他上下文。
+    提取：主体/发文机关/企业名、日期/年度、文档类型、核心要点。
+    支持企业年报、政策文件等。
     """
     if not doc_text or doc_text.startswith("["):
         return {}
-    sample = doc_text[:8000]
+    sample = doc_text[:10000]
     if api_client:
-        prompt = f"""任务：从以下文档中提取企业全称和报告年度。
-
-规则：
-1. 企业全称必须与文档中出现的完全一致，通常以“股份有限公司”“有限公司”等结尾。
-2. 报告年度必须与文档中出现的完全一致，如“2025年”“2024年度”。
-3. 若文档中未明确出现，则对应项填空字符串""。
-4. 禁止编造、禁止使用文档外的任何名称。
+        prompt = f"""你是一个文档理解器。仅从以下文档中提取信息，必须与文档中出现的完全一致。
 
 文档：
 ---
 {sample}
 ---
 
-只输出JSON，格式：{{"company":"企业全称","year":"报告年度"}}"""
+提取以下字段（若文档中未明确出现则填空字符串）：
+- org: 主体全称（企业名、发文机关、机构名等，如 XX股份有限公司、XX市人民政府）
+- year: 日期/年度（如 2025年、2024年度、2024年3月15日）
+- doc_type: 文档类型（如 年度报告、财务报告、政策文件、通知、办法）
+- key_points: 核心要点摘要（150字内，提炼文档主要内容、关键条款或数据）
+
+规则：禁止编造、禁止使用文档外的名称。只输出JSON：{{"org":"","year":"","doc_type":"","key_points":""}}"""
         try:
             res = api_client.chat.completions.create(
                 model="deepseek-chat",
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
-                timeout=25,
+                timeout=30,
             )
             j = safe_json(res.choices[0].message.content)
-            company = str(j.get("company") or "").strip()
-            year = str(j.get("year") or "").strip()
-            if not company and not year:
+            out = {
+                "company": str(j.get("org") or "").strip()[:80],
+                "year": str(j.get("year") or "").strip()[:30],
+                "org": str(j.get("org") or "").strip()[:80],
+                "doc_type": str(j.get("doc_type") or "").strip()[:40],
+                "key_points": str(j.get("key_points") or "").strip()[:300],
+            }
+            if not out["company"]:
+                out["company"] = out["org"]
+            if not out["org"]:
+                out["org"] = out["company"]
+            if not out["company"] and not out["year"]:
                 return _heuristic_extract_subject(doc_text)
-            if not year:
-                yr = re.search(r"20[12][0-9]\s*年", doc_text[:3000])
-                if yr:
-                    year = yr.group(0)
-            return {"company": company[:60], "year": year[:20]}
+            return out
         except Exception:
             return _heuristic_extract_subject(doc_text)
     return _heuristic_extract_subject(doc_text)
@@ -1057,8 +1090,8 @@ def _default_matrix():
 def init_state(event, facts):
     subject = st.session_state.get("doc_subject") or {}
     ctx = ""
-    if subject.get("company") or subject.get("year"):
-        ctx = f"分析对象：{subject.get('company','')}，{subject.get('year','')}。\n"
+    if subject.get("org") or subject.get("company") or subject.get("year"):
+        ctx = f"分析对象：{subject.get('org','') or subject.get('company','')}，{subject.get('year','')}。\n"
     prompt = f"{ctx}事件：{event}\n事实：{facts}\n返回JSON（0-100）：行政效能、焦虑指数、资源缺口、动荡风险"
     try:
         res = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}], response_format={"type":"json_object"})
@@ -1139,21 +1172,26 @@ def gen_causal(event):
 
 def gen_report(event, facts, timeline, swan, matrix, resources):
     subject = st.session_state.get("doc_subject") or {}
-    seed_hint = ""
-    if subject.get("company") or subject.get("year"):
-        c, y = subject.get("company", ""), subject.get("year", "")
-        seed_hint = f"""
-【分析对象-不可更改】企业：{c}，年度：{y}。此信息由系统从用户上传文档中自动识别。
-报告必须针对该企业该年度，开头须写明「分析对象：{c}，{y}」，禁止使用其他企业名称。
+    # 有提取结果时：报告只基于提取结果，不塞整篇长文档
+    if subject.get("org") or subject.get("year"):
+        c = subject.get("org", "") or subject.get("company", "")
+        y = subject.get("year", "")
+        doc_type = subject.get("doc_type", "")
+        kp = subject.get("key_points", "")
+        empirical = f"""【文档提取结果-研判唯一依据】
+主体/企业：{c}
+日期/年度：{y}
+文档类型：{doc_type}
+关键要点：{kp}
 
-"""
-    elif st.session_state.get("uploaded_doc_text") and not str(st.session_state.get("uploaded_doc_text", "")).startswith("["):
-        seed_hint = "\n【硬性约束】实证材料开头为用户上传的种子文档。你必须从该文档中找出企业名称与报告年度，并严格基于该文档分析。禁止编造企业名。\n\n"
+报告必须针对上述主体与年度，开头须写明「分析对象：{c}，{y}」。禁止使用其他主体名称。"""
+    else:
+        empirical = facts
     prompt = f"""
 你是国家级战略安全顾问，生成正式研判报告。
-{seed_hint}
+
 事件：{event}
-实证：{facts}
+实证材料：{empirical}
 演化时序：{timeline}
 黑天鹅：{swan}
 社会状态：{matrix}
@@ -1380,8 +1418,15 @@ if uploaded_doc:
     st.session_state.uploaded_doc_text = doc_text
     if doc_text and not doc_text.startswith("["):
         st.caption(f"已解析 {len(doc_text)} 字符，将并入实证上下文")
+doc_preview = st.session_state.get("uploaded_doc_text") or ""
+if doc_preview and not doc_preview.startswith("[") and len(doc_preview) > 50:
+    with st.expander("📄 文档提取预览（请核对系统读到的内容是否正确）", expanded=False):
+        st.text_area("提取的文本前 2500 字", value=doc_preview[:2500], height=180, disabled=True, key="doc_preview_ta")
+        st.caption("若此处内容乱码或缺失，说明 PDF 解析不佳，建议更换文件或使用 TXT/Word 格式")
 if not PDF_AVAILABLE:
     st.caption("💡 支持 PDF：pip install pymupdf 或 pip install pypdf")
+if not OCR_AVAILABLE:
+    st.caption("💡 扫描版 PDF 可启用 OCR：pip install pdf2image pytesseract（另需安装 Tesseract 程序）")
 if not DOCX_AVAILABLE:
     st.caption("💡 支持 Word：pip install python-docx")
 
@@ -1518,17 +1563,17 @@ if run and client and event:
                 s.update(label="🌐 检索实证案例")
                 doc_text = st.session_state.get("uploaded_doc_text") or ""
                 if doc_text and not doc_text.startswith("[") and len(doc_text) > 200:
-                    s.update(label="📄 自动识别文档中的企业与年度")
-                    subject = auto_extract_doc_subject(doc_text, client)
-                    st.session_state.doc_subject = subject
+                    s.update(label="📄 专职文档理解（提取主体、年度、要点）")
+                    extract = document_understanding(doc_text, client)
+                    st.session_state.doc_subject = extract
                     anchor = ""
-                    if subject.get("company") or subject.get("year"):
-                        anchor = f"【系统自动识别的分析对象】企业：{subject.get('company','')}，年度：{subject.get('year','')}。以下研判必须与此完全一致。\n\n"
-                    facts = f"""{anchor}【用户上传的种子材料】
+                    if extract.get("org") or extract.get("year"):
+                        anchor = f"【系统提取的分析对象】主体：{extract.get('org','')}，日期/年度：{extract.get('year','')}，类型：{extract.get('doc_type','')}。\n关键要点：{extract.get('key_points','')}\n\n以下研判必须与此一致。\n\n"
+                    facts = f"""{anchor}【用户上传的种子材料（供参考）】
 ---
-{doc_text[:20000]}
+{doc_text[:15000]}
 ---
-【以上为种子材料结束】"""
+【以上为种子材料】"""
                     evidence_items = []
                 else:
                     st.session_state.doc_subject = {}
@@ -1743,8 +1788,8 @@ elif st.session_state.get("sim_phase") == "stepping" and st.session_state.get("r
 elif st.session_state.timeline:
     st.divider()
     subj = st.session_state.get("doc_subject") or {}
-    if subj.get("company") or subj.get("year"):
-        st.info(f"📄 **系统自动识别的分析对象**：{subj.get('company','')}，{subj.get('year','')}")
+    if subj.get("org") or subj.get("company") or subj.get("year"):
+        st.info(f"📄 **系统识别的分析对象**：{subj.get('org','') or subj.get('company','')}，{subj.get('year','')} | {subj.get('doc_type','')}")
     st.subheader("📺 实时态势总面板")
 
     # 1. 状态指标
