@@ -11,32 +11,7 @@ import pandas as pd
 st.set_page_config(page_title="神策 - 战略级联动推演系统", layout="wide")
 
 st.markdown("""
-    <style>
-    .block-container { max-width: 98% !important; padding: 2rem 1% !important; background-color: #ffffff; }
-    .logic-box { 
-        background-color: #f1f3f9; padding: 30px; border-left: 12px solid #673ab7; 
-        border-radius: 10px; margin: 25px 0; width: 100%; font-size: 1.2rem; 
-        line-height: 1.7; font-family: 'Courier New', monospace; color: #1a1a1a;
-    }
-    .role-card { padding: 25px; border-radius: 12px; min-height: 480px; box-shadow: 0 8px 20px rgba(0,0,0,0.1); margin-bottom: 25px; border: 1px solid #e0e0e0; color: #1a1a1a; }
-    .role-official { background-color: #f0f7ff; border-top: 10px solid #0056b3; }
-    .role-citizen { background-color: #fff9e6; border-top: 10px solid #ffcc00; }
-    .role-media { background-color: #f2fff2; border-top: 10px solid #28a745; }
-    .role-risk { background-color: #fff2f2; border-top: 10px solid #dc3545; }
     
-    .evidence-card { background-color: #f8f9fa; padding: 20px; border-radius: 10px; border: 1px solid #dee2e6; margin-bottom: 15px; min-height: 180px; }
-    .evidence-link { color: #0056b3; text-decoration: none; font-weight: bold; font-size: 0.9rem; }
-    
-    .report-card { 
-        background-color: #ffffff; padding: 50px; border-radius: 20px; 
-        border: 1px solid #d1d9e6; border-top: 20px solid #0056b3; 
-        box-shadow: 0 15px 50px rgba(0,0,0,0.1); margin-top: 40px; width: 100%; color: #1a1a1a;
-    }
-    .status-card {
-        padding: 15px; border-radius: 8px; margin: 10px 0;
-        background: #f8f9ff; border-left: 6px solid #673ab7;
-    }
-    </style>
     """, unsafe_allow_html=True)
 
 # --- 全局会话状态缓存（新增）---
@@ -145,9 +120,9 @@ if st.session_state.simulation_history:
     with st.expander("📜 查看最近推演记录", expanded=False):
         for idx, item in enumerate(reversed(st.session_state.simulation_history[-5:])):
             st.markdown(
-                f"""<div class='status-card'>
+                f"""
                 [{item['time']}] 事件：{item['event'][:30]}...
-                </div>""",
+                """,
                 unsafe_allow_html=True
             )
 
@@ -174,11 +149,7 @@ if reuse_last and st.session_state.last_result:
         for idx, item in enumerate(raw_evidence):
             with e_cols[idx]:
                 st.markdown(f"""
-                <div class="evidence-card">
-                    <strong>{item.get('title')[:25]}...</strong><br>
-                    <p style="font-size: 0.85rem; color: #555; margin-top:8px;">{item.get('snippet')[:100]}...</p>
-                    <a href="{item.get('link')}" target="_blank" class="evidence-link">查看详情 →</a>
-                </div>
+                {item.get('title')[:25]}...{item.get('snippet')[:100]}...查看详情 →
                 """, unsafe_allow_html=True)
     else:
         st.info("未发现直接历史对标案例。")
@@ -199,18 +170,18 @@ if reuse_last and st.session_state.last_result:
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### 🔗 连锁反应路径")
-    st.markdown(f"<div class='logic-box'>{path_code.replace('->', ' ➔ ')}</div>", unsafe_allow_html=True)
+    st.markdown(f"{path_code.replace('->', ' ➔ ')}", unsafe_allow_html=True)
 
     st.divider()
     st.markdown("### 🔄 智能体多维博弈回溯")
     c1,c2,c3,c4 = st.columns(4)
-    with c1: st.markdown(f"<div class='role-card role-official'><b>🏛️ 官方决策</b><br><br>{off}</div>", unsafe_allow_html=True)
-    with c2: st.markdown(f"<div class='role-card role-citizen'><b>⚠️ 民众反应</b><br><br>{cit}</div>", unsafe_allow_html=True)
-    with c3: st.markdown(f"<div class='role-card role-media'><b>📢 舆论态势</b><br><br>{med}</div>", unsafe_allow_html=True)
-    with c4: st.markdown(f"<div class='role-card role-risk'><b>🛡️ 逻辑审计</b><br><br>{rsk}</div>", unsafe_allow_html=True)
+    with c1: st.markdown(f"{off}", unsafe_allow_html=True)
+    with c2: st.markdown(f"{cit}", unsafe_allow_html=True)
+    with c3: st.markdown(f"{med}", unsafe_allow_html=True)
+    with c4: st.markdown(f"{rsk}", unsafe_allow_html=True)
 
     st.divider()
-    st.markdown(f"<div class='report-card'><h2>📝 全维度战略研判报告 (PESTEL 架构)</h2><br>{report}</div>", unsafe_allow_html=True)
+    st.markdown(f"📝 全维度战略研判报告 (PESTEL 架构){report}", unsafe_allow_html=True)
     st.download_button("📂 导出推演档案 (.md)", data=f"# 神策推演报告\n\n{report}", file_name="shence_report.md")
 
 elif start_btn:
@@ -295,11 +266,7 @@ elif start_btn:
         for idx, item in enumerate(raw_evidence):
             with e_cols[idx]:
                 st.markdown(f"""
-                <div class="evidence-card">
-                    <strong>{item.get('title')[:25]}...</strong><br>
-                    <p style="font-size: 0.85rem; color: #555; margin-top:8px;">{item.get('snippet')[:100]}...</p>
-                    <a href="{item.get('link')}" target="_blank" class="evidence-link">查看详情 →</a>
-                </div>
+                {item.get('title')[:25]}...{item.get('snippet')[:100]}...查看详情 →
                 """, unsafe_allow_html=True)
     else:
         st.info("未发现直接历史对标案例。")
@@ -322,30 +289,67 @@ elif start_btn:
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### 🔗 连锁反应路径")
-    st.markdown(f"<div class='logic-box'>{path_code.replace('->', ' ➔ ')}</div>", unsafe_allow_html=True)
+    st.markdown(f"{path_code.replace('->', ' ➔ ')}", unsafe_allow_html=True)
 
     st.divider()
     st.markdown("### 🔄 智能体多维博弈回溯")
     c1, c2, c3, c4 = st.columns(4)
-    with c1: st.markdown(f"<div class='role-card role-official'><b>🏛️ 官方决策</b><br><br>{off}</div>", unsafe_allow_html=True)
-    with c2: st.markdown(f"<div class='role-card role-citizen'><b>⚠️ 民众反应</b><br><br>{cit}</div>", unsafe_allow_html=True)
-    with c3: st.markdown(f"<div class='role-card role-media'><b>📢 舆论态势</b><br><br>{med}</div>", unsafe_allow_html=True)
-    with c4: st.markdown(f"<div class='role-card role-risk'><b>🛡️ 逻辑审计</b><br><br>{rsk}</div>", unsafe_allow_html=True)
+    with c1: st.markdown(f"{off}", unsafe_allow_html=True)
+    with c2: st.markdown(f"{cit}", unsafe_allow_html=True)
+    with c3: st.markdown(f"{med}", unsafe_allow_html=True)
+    with c4: st.markdown(f"{rsk}", unsafe_allow_html=True)
 
     st.divider()
     st.markdown("### 📝 生成综合研判报告")
     with st.spinner("正在生成 PESTEL 深度报告..."):
+        # ======================= 【核心修改：PESTEL报告生成逻辑】 =======================
+        # 重写Prompt，强制报告紧扣事件、基于所有推演结果，给出可落地对策
         def get_report():
-            report_p = f"基于实证与仿真结果，为该事件撰写深度 PESTEL 研判报告。"
+            # 构建完整的推演上下文，让AI能调用所有前期结果
+            report_prompt = f"""
+            你是顶级战略研判专家，专注于复杂事件的全维度分析，本次任务是为【{event_input}】事件，基于本次完整推演结果，撰写PESTEL架构的深度研判报告，要求如下：
+
+            一、核心要求（必须严格遵守，否则报告无效）
+            1.  全文紧扣【{event_input}】事件，不脱离事件本身泛泛而谈，所有分析、结论、对策都要对应本次事件场景；
+            2.  严格基于本次推演的所有核心数据，不得编造信息，所有观点必须有推演结果支撑：
+                - 初始社会状态：政府效能{init_eff}分、民众焦虑{init_panic}分、资源储备{init_res}分；
+                - 社会演化趋势：{json.dumps(time_data, ensure_ascii=False, indent=2)}（T0到7天的4项核心指标变化）；
+                - 多主体博弈结果：官方决策[{off}]、民众反应[{cit}]、舆论态势[{med}]、风险漏洞[{rsk}]；
+                - 连锁反应链条：{path_code}；
+                - 历史参考：{facts_text}（无则忽略，但需说明）；
+            3.  PESTEL六个维度（政治、经济、社会、技术、环境、法律），每个维度都要结合上述推演结果分析，不遗漏任何一个维度；
+            4.  每个维度分析后，必须给出【针对性、可落地】的对策建议，对策要对应维度痛点，不能空洞，要结合本次事件的演化趋势和风险点；
+            5.  报告结尾需有【综合总结】，提炼核心风险、关键结论和整体应对思路，呼应前期所有推演结果；
+            6.  语言严谨、专业，符合战略研判报告调性，避免口语化，逻辑连贯，层层递进，不出现与事件无关的废话。
+
+            二、报告结构（严格按照此结构撰写，无需额外标题）
+            1.  引言：简要说明本次事件背景、推演目的，关联初始社会状态，引出PESTEL分析；
+            2.  PESTEL各维度分析（每维度含“现状分析+问题痛点+可落地对策”）：
+                - 政治维度（Political）：结合政府效能演化、官方决策，分析政策响应、管控能力等，给出优化建议；
+                - 经济维度（Economic）：结合资源储备变化、连锁反应，分析经济影响、资源调度等，给出应对方案；
+                - 社会维度（Social）：结合民众焦虑变化、民众反应、舆论态势，分析社会情绪、谣言管控等，给出疏导建议；
+                - 技术维度（Technological）：结合事件处置需求，分析技术支撑（如信息发布、资源调度技术）的不足与优化方向；
+                - 环境维度（Environmental）：结合事件本身（如极端灾害、公共卫生等），分析环境影响、次生灾害防控；
+                - 法律维度（Legal）：结合事件处置中的合规性、责任界定，分析法律风险，给出合规建议；
+            3.  综合总结：提炼核心风险（结合风险漏洞和演化趋势）、关键结论，给出整体应对策略，呼应推演目标。
+
+            三、禁忌
+            - 禁止脱离本次事件和推演结果，编造分析内容；
+            - 禁止对策空洞（如“加强管理”“提升能力”类废话），必须具体可落地；
+            - 禁止遗漏PESTEL任何一个维度；
+            - 禁止出现与【{event_input}】事件无关的内容，不泛谈通用理论。
+            """
             return client.chat.completions.create(
                 model="gpt-4o",
-                messages=[{"role":"user","content":report_p}]
+                messages=[{"role":"system","content":"你是严谨的战略研判专家，只输出符合要求的PESTEL报告，不添加任何多余内容"},
+                         {"role":"user","content":report_prompt}],
+                temperature=0.3  # 降低发散率，确保报告严谨、贴合事实
             ).choices[0].message.content
         
-        report = safe_api_call(get_report, max_retries) or "报告生成失败"
+        report = safe_api_call(get_report, max_retries) or "报告生成失败，建议重试或检查API配置"
         st.session_state.last_result["report"] = report
 
-    st.markdown(f"<div class='report-card'><h2>📝 全维度战略研判报告 (PESTEL 架构)</h2><br>{report}</div>", unsafe_allow_html=True)
+    st.markdown(f"📝 全维度战略研判报告 (PESTEL 架构){report}", unsafe_allow_html=True)
     
     # 导出功能
     export_content = f"""# 神策推演报告
