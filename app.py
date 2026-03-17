@@ -321,12 +321,19 @@ def fetch_url_as_seed(url: str) -> str:
         return f"[URL 抓取异常] {str(e)[:80]}"
 
 def _heuristic_extract_subject(text: str) -> dict:
-    """无 API 时用正则从文档前 4000 字提取。"""
-    t = (text or "")[:4000]
+    """无 API 时用正则从文档前 5000 字提取。"""
+    t = (text or "")[:5000]
     out = {"company": "", "year": "", "org": "", "doc_type": "", "key_points": ""}
-    m = re.search(r"([\u4e00-\u9fa5A-Za-z0-9]{2,28}(?:股份有限公司|集团有限公司|有限公司))", t)
-    if m:
-        out["company"] = out["org"] = m.group(1)
+    # 企业名：多种模式，取第一个匹配
+    patterns = [
+        r"([\u4e00-\u9fa5A-Za-z0-9]{2,30}(?:股份有限公司|集团有限公司|有限公司|实业有限公司|科技股份有限公司))",
+        r"([\u4e00-\u9fa5]{2,20}(?:人民政府|市政府|发改委|工信部|财政部))",
+    ]
+    for pat in patterns:
+        m = re.search(pat, t)
+        if m:
+            out["company"] = out["org"] = m.group(1).strip()
+            break
     for y in re.findall(r"20[12][0-9]\s*年(?:度)?|二[〇零○]二[〇一二三四五六七八九]\s*年", t):
         digit = re.search(r"20[12][0-9]", y)
         if digit:
@@ -342,52 +349,56 @@ def _heuristic_extract_subject(text: str) -> dict:
         out["doc_type"] = "政策文件"
     elif "年报" in t or "年度报告" in t or "财务" in t:
         out["doc_type"] = "企业报告"
-    out["key_points"] = t[:400].replace("\n", " ").strip()[:200]
+    out["key_points"] = t[:500].replace("\n", " ").strip()[:200]
     return out
 
 def document_understanding(doc_text: str, api_client) -> dict:
     """
     专职文档理解：仅传入文档，无其他上下文。
     提取：主体/发文机关/企业名、日期/年度、文档类型、核心要点。
-    支持企业年报、政策文件等。
     """
     if not doc_text or doc_text.startswith("["):
         return {}
-    sample = doc_text[:10000]
+    # 企业名、年度多在文档前部，优先用前 6000 字
+    sample = doc_text[:6000]
     if api_client:
-        prompt = f"""你是一个文档理解器。仅从以下文档中提取信息，必须与文档中出现的完全一致。
+        prompt = f"""任务：从以下文档中提取信息。org 和 year 必须是文档中出现的原文，逐字复制，不得改动。
 
-文档：
+文档内容：
 ---
 {sample}
 ---
 
-提取以下字段（若文档中未明确出现则填空字符串）：
-- org: 主体全称（企业名、发文机关、机构名等，如 XX股份有限公司、XX市人民政府）
-- year: 日期/年度（如 2025年、2024年度、2024年3月15日）
-- doc_type: 文档类型（如 年度报告、财务报告、政策文件、通知、办法）
-- key_points: 核心要点摘要（150字内，提炼文档主要内容、关键条款或数据）
+要求：
+1. org：主体全称（企业名或发文机关），必须在文档中能找到完全相同的字符串
+2. year：日期/年度，必须在文档中能找到完全相同的字符串
+3. doc_type：文档类型（年报/财务报告/政策文件/通知等）
+4. key_points：核心要点，100字内，仅基于文档内容
 
-规则：禁止编造、禁止使用文档外的名称。只输出JSON：{{"org":"","year":"","doc_type":"","key_points":""}}"""
+若文档中未出现则填空字符串。只输出JSON：{{"org":"","year":"","doc_type":"","key_points":""}}"""
         try:
             res = api_client.chat.completions.create(
                 model="deepseek-chat",
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
-                timeout=30,
+                timeout=35,
             )
             j = safe_json(res.choices[0].message.content)
+            org = str(j.get("org") or "").strip()[:80]
+            year = str(j.get("year") or "").strip()[:30]
+            # 校验：提取结果必须在文档中出现，否则丢弃
+            if org and org not in doc_text[:10000]:
+                org = ""
+            year_digits = re.sub(r"[^\d]","", year) if year else ""
+            if year and year not in doc_text[:10000] and (not year_digits or year_digits not in doc_text[:10000]):
+                year = ""
             out = {
-                "company": str(j.get("org") or "").strip()[:80],
-                "year": str(j.get("year") or "").strip()[:30],
-                "org": str(j.get("org") or "").strip()[:80],
+                "company": org,
+                "year": year,
+                "org": org,
                 "doc_type": str(j.get("doc_type") or "").strip()[:40],
                 "key_points": str(j.get("key_points") or "").strip()[:300],
             }
-            if not out["company"]:
-                out["company"] = out["org"]
-            if not out["org"]:
-                out["org"] = out["company"]
             if not out["company"] and not out["year"]:
                 return _heuristic_extract_subject(doc_text)
             return out
@@ -1420,9 +1431,9 @@ if uploaded_doc:
         st.caption(f"已解析 {len(doc_text)} 字符，将并入实证上下文")
 doc_preview = st.session_state.get("uploaded_doc_text") or ""
 if doc_preview and not doc_preview.startswith("[") and len(doc_preview) > 50:
-    with st.expander("📄 文档提取预览（请核对系统读到的内容是否正确）", expanded=False):
-        st.text_area("提取的文本前 2500 字", value=doc_preview[:2500], height=180, disabled=True, key="doc_preview_ta")
-        st.caption("若此处内容乱码或缺失，说明 PDF 解析不佳，建议更换文件或使用 TXT/Word 格式")
+    st.info(f"📄 **文档提取预览**（共 {len(doc_preview)} 字，请核对系统读到的内容是否正确）")
+    st.text_area("系统读取到的文档内容（前 2500 字）", value=doc_preview[:2500], height=200, disabled=True, key="doc_preview_ta")
+    st.caption("若此处内容乱码或缺失，说明 PDF 解析不佳，建议更换文件或使用 TXT/Word 格式")
 if not PDF_AVAILABLE:
     st.caption("💡 支持 PDF：pip install pymupdf 或 pip install pypdf")
 if not OCR_AVAILABLE:
