@@ -327,6 +327,194 @@ def parse_uploaded_document(uploaded_file) -> str:
         return f"[文档解析异常] {str(e)[:120]}"
     return ""
 
+def analyze_uploaded_text(text: str) -> dict:
+    """
+    对上传文档的全文内容进行结构化分析，用于后续研判。
+    逻辑参考 file-report-generator 中的 analyze_content。
+    """
+    if not text or not str(text).strip():
+        return {"error": "文档内容为空"}
+
+    text = str(text).strip()
+    lines = [l for l in text.split("\n") if l.strip()]
+
+    char_count = len(text)
+    word_count = len(re.findall(r"[\u4e00-\u9fff\w]+", text))
+    line_count = len(lines)
+    paragraph_count = len(re.split(r"\n\s*\n", text))
+
+    headings = []
+    for line in lines[:50]:
+        line = line.strip()
+        if 2 <= len(line) <= 50 and not line.endswith(("。", "，")):
+            headings.append(line)
+
+    words = re.findall(r"[\u4e00-\u9fff]{2,}|[a-zA-Z]{3,}", text)
+    word_freq: dict[str, int] = {}
+    for w in words:
+        word_freq[w] = word_freq.get(w, 0) + 1
+    top_keywords = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:15]
+
+    summary = text[:300].replace("\n", " ")
+    if len(text) > 300:
+        summary += "..."
+
+    content_preview = text[:500]
+
+    return {
+        "char_count": char_count,
+        "word_count": word_count,
+        "line_count": line_count,
+        "paragraph_count": paragraph_count,
+        "headings": headings[:10],
+        "keywords": [{"word": w, "count": c} for w, c in top_keywords],
+        "summary": summary,
+        "content_preview": content_preview,
+    }
+
+def generate_uploaded_doc_report(analysis: dict, filename: str, file_type: str) -> str:
+    """
+    基于全文分析结果生成“内容研判 + 建议”的综合报告。
+    逻辑参考 file-report-generator 中的 generate_report（第二段实现）。
+    """
+    if not analysis or analysis.get("error"):
+        return analysis.get("error", "文档内容为空或解析失败")
+
+    keywords_top = [k["word"] for k in analysis.get("keywords", [])[:5]]
+    theme_str = "、".join(keywords_top) if keywords_top else "（未识别到明显主题词）"
+    para_count = int(analysis.get("paragraph_count", 0) or 0)
+    word_count = int(analysis.get("word_count", 0) or 0)
+    content_preview = analysis.get("content_preview", analysis.get("summary", "")) or ""
+
+    raw_sentences = re.split(r"[。！？!?\\n]", content_preview)
+    sentences = [s.strip() for s in raw_sentences if s.strip()]
+    core_points = sentences[:6]
+
+    risk_words = ["风险", "问题", "不足", "隐患", "挑战", "困难", "矛盾", "压力"]
+    risk_sentences = [s for s in sentences if any(w in s for w in risk_words)][:5]
+
+    report = f"""
+# 文档内容分析研判报告（基于全文）
+
+**生成时间**: {datetime.now().strftime('%Y年%m月%d日 %H:%M:%S')}
+
+**文件名**: {filename or "未命名文档"}
+
+**文件类型**: {file_type.upper() if file_type else "未知"}
+
+---
+
+## 一、内容概览与主旨判断
+
+{analysis.get('summary', '')}
+
+- 初步判断：文档重点围绕 **{theme_str}** 等议题展开。
+
+---
+
+## 二、基础规模与结构特征
+
+> 下列数据用于理解文档篇幅与结构特征。
+
+- 约 **{analysis.get('word_count', 0):,}** 个词汇，**{analysis.get('paragraph_count', 0)}** 个段落；
+- 行数约 **{analysis.get('line_count', 0):,}** 行，文本总体篇幅属{"较短" if word_count < 200 else "中等" if word_count < 1500 else "偏长"}范围；
+- 结构上{"层次较为清晰，适合进一步拆解重点内容" if para_count > 3 else "结构相对简洁，更适合快速阅读和提炼关键信息"}。
+
+---
+
+## 三、结构要点与章节线索
+
+### 可能的章节或小节标题（按出现顺序）
+"""
+    for h in analysis.get("headings", [])[:8]:
+        report += f"- {h}\n"
+
+    report += """
+
+---
+
+## 四、关键词分布与关注焦点
+
+| 关键词 | 出现次数 |
+|--------|----------|
+"""
+    for kw in analysis.get("keywords", [])[:10]:
+        report += f"| {kw['word']} | {kw['count']} |\n"
+
+    report += """
+
+从上述高频词可以看出，文档在以下方向上着墨较多：""" + (theme_str if theme_str else "当前文本中未能明显识别出高频主题词") + "。"
+
+    report += """
+
+---
+
+## 五、核心观点与关键信息提炼
+
+结合文档内容，梳理若干有代表性的要点，供快速理解与汇报使用：
+"""
+    if core_points:
+        for idx, s in enumerate(core_points, 1):
+            report += f"{idx}. {s}\n"
+    else:
+        report += "- 当前文档内容较为零散，暂无法自动提炼清晰的关键要点，请结合原文进行人工补充。\n"
+
+    report += """
+
+---
+
+## 六、潜在风险、问题与影响研判
+
+结合文中表述，对可能存在的风险点和问题进行初步识别（仅供参考）：
+"""
+    if risk_sentences:
+        for idx, s in enumerate(risk_sentences, 1):
+            report += f"{idx}. {s}\n"
+        report += "\n> 建议对上述内容逐条梳理，纳入风险台账或整改清单。\n"
+    else:
+        report += (
+            "- 在可识别的文本片段中，未出现明显的“风险 / 问题 / 不足”等关键词表述；\n"
+            "- 仍建议结合业务实际，从目标达成度、资源保障、进度安排、外部环境等维度，进一步排查潜在风险。\n"
+        )
+
+    report += """
+
+---
+
+## 七、意见建议与行动方向
+
+在不改变原文含义的前提下，根据文本主题与表述方式，提出若干可落地的参考建议：
+"""
+    if word_count < 300:
+        report += (
+            "1. 建议在现有基础上，进一步补充背景、目标和评估标准，使文档从“情况说明”升级为可直接指导工作的“任务清单”。\n"
+            "2. 对文中涉及的关键工作事项，建议形成简要台账（事项—责任人—时间节点—预期结果），便于跟踪落实。\n"
+        )
+    elif word_count < 2000:
+        report += (
+            "1. 建议从文中高频主题（如：" + theme_str + "）出发，梳理 3–5 条核心目标，并与现有措施逐一对应。\n"
+            "2. 对关键环节设置可量化的评价指标（时间、质量、风险、资源等），将“原则性表述”转化为“可检查事项”。\n"
+            "3. 对可能存在的风险点，建议在文末单列“风险及应对措施”部分，明确预案和兜底安排。\n"
+        )
+    else:
+        report += (
+            "1. 文档内容较为详尽，建议在此基础上提炼 1–2 页的高层概要（包含背景、目标、路径、风险、结论），用于领导汇报或部门沟通。\n"
+            "2. 将文中涉及的重点任务转化为项目化清单（里程碑—关键交付物—责任单位—资源需求），以便纳入整体工作计划管理。\n"
+            "3. 对涉及多部门协同的事项，建议补充“协同机制”和“信息共享机制”的设计，避免执行过程出现断点或重复劳动。\n"
+        )
+
+    report += """
+
+---
+
+## 八、综合结论
+
+总体来看，本文件在阐述“""" + theme_str + """”等方面具有一定的完整性和参考价值。
+建议将上述“核心观点”“风险问题”“意见建议”作为二次加工的基础材料，用于形成更具针对性的决策支持报告或专题研判材料。
+"""
+
+    return report.strip()
+
 def fetch_url_as_seed(url: str) -> str:
     """抓取网页内容作为种子，返回纯文本。"""
     if not url or not url.strip():
@@ -1357,7 +1545,17 @@ if uploaded_doc:
         st.session_state.uploaded_doc_text = doc_text
         st.session_state._doc_parse_key = file_key
     if st.session_state.get("uploaded_doc_text") and not st.session_state.uploaded_doc_text.startswith("["):
-        st.caption(f"已解析 {len(st.session_state.uploaded_doc_text)} 字符，将并入实证上下文")
+        doc_text = st.session_state.uploaded_doc_text
+        st.caption(f"已解析 {len(doc_text)} 字符，将并入实证上下文并用于全文内容研判")
+        # 基于全文内容进行一次固定规则的分析与研判
+        analysis = analyze_uploaded_text(doc_text)
+        st.session_state.uploaded_doc_analysis = analysis
+        # 文件名与类型用于报告展示
+        fname = getattr(uploaded_doc, "name", "") or "未命名文档"
+        ext = ""
+        if "." in fname:
+            ext = fname.rsplit(".", 1)[1].lower()
+        st.session_state.uploaded_doc_report = generate_uploaded_doc_report(analysis, fname, ext)
 else:
     if "_doc_parse_key" in st.session_state:
         del st.session_state["_doc_parse_key"]
@@ -1999,6 +2197,11 @@ elif st.session_state.timeline:
     report_title = f"**场景：{st.session_state.get('scenario_name', '未命名')}**\n\n" if st.session_state.get("scenario_name") else ""
     st.markdown(f"<div class='report-card'>{report_title}{st.session_state.report}</div>", unsafe_allow_html=True)
 
+    # 若存在上传文档的全文内容分析报告，则一并展示，体现“基于全部内容的分析研判”
+    if st.session_state.get("uploaded_doc_report"):
+        st.subheader("📄 文档内容分析研判（基于上传全文）")
+        st.markdown(f"<div class='report-card'>{st.session_state.uploaded_doc_report}</div>", unsafe_allow_html=True)
+
     # 导出区
     d_cols = st.columns(4)
     with d_cols[0]:
@@ -2020,6 +2223,8 @@ elif st.session_state.timeline:
             "hf_params": st.session_state.get("hf_params", {}),
             "resource_display_map": st.session_state.get("resource_display_map", {}),
             "infra_display_map": st.session_state.get("infra_display_map", {}),
+            "uploaded_doc_analysis": st.session_state.get("uploaded_doc_analysis", {}),
+            "uploaded_doc_report": st.session_state.get("uploaded_doc_report", ""),
         }, ensure_ascii=False, indent=2)
         fname_json = (st.session_state.get("scenario_name") or "SHENCE").replace(" ", "_") + "_数据.json"
         st.download_button("💾 导出JSON数据包", json_data, fname_json, use_container_width=True)
