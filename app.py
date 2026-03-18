@@ -1969,12 +1969,15 @@ elif st.session_state.timeline:
     # 2. 资源调度面板（展示名称根据事件动态生成，体现灵活分析）
     st.subheader("🚚 资源与兵力调度面板")
     r = st.session_state.resources[-1]
-    r_cols = st.columns(6)
     res_display = st.session_state.get("resource_display_map") or {}
     r_keys = list(r.keys())
-    for i, k in enumerate(r_keys):
+    # 按行分布资源卡片，避免资源种类增加后列数不够导致 IndexError
+    num_cols = 6
+    r_cols = st.columns(num_cols)
+    for idx, k in enumerate(r_keys):
+        col = r_cols[idx % num_cols]
         label = res_display.get(k, k)
-        r_cols[i].markdown(f"""
+        col.markdown(f"""
 <div class='resource-card'>
 {label}<br>
 <h3>{r[k]}%</h3>
