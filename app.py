@@ -2267,19 +2267,19 @@ elif st.session_state.timeline:
             "uploaded_doc_analysis": st.session_state.get("uploaded_doc_analysis", {}),
             "uploaded_doc_report": st.session_state.get("uploaded_doc_report", ""),
         }, ensure_ascii=False, indent=2)
-        fname_json = "推演数据包.json"
+        fname_json = "SHENCE_数据.json"
         st.download_button("💾 导出JSON数据包", json_data, fname_json, use_container_width=True)
     with d_cols[1]:
         csv_df = pd.DataFrame(st.session_state.matrix_history)
         csv_df.insert(0, "阶段", ["初始"] + [f"第{i}步" for i in range(1, len(csv_df))])
-        fname_csv = "指标演化.csv"
+        fname_csv = "SHENCE_指标演化.csv"
         st.download_button("📊 导出指标CSV", csv_df.to_csv(index=False).encode("utf-8-sig"), fname_csv, "text/csv", use_container_width=True)
     with d_cols[2]:
         pdf_report = st.session_state.report
         pdf_doc_appendix = (st.session_state.get("uploaded_doc_text") or "")[:4000]
         if pdf_doc_appendix and pdf_doc_appendix.startswith("["):
             pdf_doc_appendix = ""
-        st.download_button("📄 导出PDF报告", export_pdf(pdf_report, pdf_doc_appendix), "研判报告.pdf", use_container_width=True)
+        st.download_button("📄 导出PDF报告", export_pdf(pdf_report, pdf_doc_appendix), "SHENCE_研判报告.pdf", use_container_width=True)
     with d_cols[3]:
         if st.button("🔁 重置仿真", use_container_width=True, key="reset_bottom"):
             request_reset()
