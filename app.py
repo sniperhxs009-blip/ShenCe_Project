@@ -252,7 +252,7 @@ def parse_uploaded_document(uploaded_file) -> str:
         name = (uploaded_file.name or "").lower()
         raw = uploaded_file.read()
         max_chars = 60000  # 支持较长报告（如年报）
-        max_pages = 120
+        max_pages = 80  # 页数过多会导致首次解析过慢
 
         if name.endswith(".txt"):
             return _decode_text(raw, max_chars)
@@ -289,7 +289,7 @@ def parse_uploaded_document(uploaded_file) -> str:
             # OCR 兜底：文字极少（如扫描版）时尝试 OCR
             if OCR_AVAILABLE and len(out.strip()) < 500:
                 try:
-                    images = convert_from_bytes(raw, first_page=1, last_page=min(10, max_pages), dpi=150)
+                    images = convert_from_bytes(raw, first_page=1, last_page=min(5, max_pages), dpi=120)
                     ocr_parts = []
                     for img in images:
                         ocr_text = pytesseract.image_to_string(img, lang="chi_sim+eng")
@@ -1349,10 +1349,18 @@ if st.button("🔄 加载网页", key="fetch_url_btn") and seed_url:
     if url_text and not url_text.startswith("["):
         st.caption(f"已抓取 {len(url_text)} 字符")
 if uploaded_doc:
-    doc_text = parse_uploaded_document(uploaded_doc)
-    st.session_state.uploaded_doc_text = doc_text
-    if doc_text and not doc_text.startswith("["):
-        st.caption(f"已解析 {len(doc_text)} 字符，将并入实证上下文")
+    # 仅在文件变更时重新解析，避免每次 rerun 都耗时解析（PDF/OCR 很慢）
+    file_key = getattr(uploaded_doc, "file_id", None) or f"{uploaded_doc.name}_{uploaded_doc.size}"
+    if st.session_state.get("_doc_parse_key") != file_key:
+        with st.spinner("正在解析文档..."):
+            doc_text = parse_uploaded_document(uploaded_doc)
+        st.session_state.uploaded_doc_text = doc_text
+        st.session_state._doc_parse_key = file_key
+    if st.session_state.get("uploaded_doc_text") and not st.session_state.uploaded_doc_text.startswith("["):
+        st.caption(f"已解析 {len(st.session_state.uploaded_doc_text)} 字符，将并入实证上下文")
+else:
+    if "_doc_parse_key" in st.session_state:
+        del st.session_state["_doc_parse_key"]
 if not PDF_AVAILABLE:
     st.caption("💡 支持 PDF：pip install pymupdf 或 pip install pypdf")
 if not OCR_AVAILABLE:
