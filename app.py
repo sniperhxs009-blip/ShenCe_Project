@@ -1399,31 +1399,45 @@ def multi_perspective_assess(event: str, empirical: str, timeline, swan: str, ma
 社会状态（0-100）：{matrix}
 资源状态（0-100）：{resources}
 """
+    resource_keys = list((resources or {}).keys())
     common_rules = """你必须遵守：
 1) 不得编造任何未在输入中出现的事实或数字；
 2) 若信息不足必须明确写“不确定/需补充”；
-3) 必须输出结构化对象，仅包含字段：判断、预测、置信度（0-1）、假设（要点列表）、触发条件（列表）、建议（列表）。
-4) “判断”与“预测”必须分开写清楚，且每段 120-220 字。
+3) 必须输出结构化对象，仅包含字段：主要观点（3-5条要点列表）、资源关联（对象）、风险点（最多5条）、触发条件（最多5条）、建议（最多6条）、置信度（0-1）。
+4) 资源关联必须从输入提供的资源键中选择，不得自行新增资源类别；并明确“高度相关/中度相关/低相关”三档。
+"""
+    resource_rule = f"""资源清单（仅可从中选择）：{resource_keys}
+资源关联字段格式示例：
+{{
+  "高度相关": ["警力","通信"],
+  "中度相关": ["医疗"],
+  "低相关": ["燃气","财政资金"]
+}}
+如果某资源与事件无明显关系，请放入“低相关”。不要把所有资源都说成高度相关。
 """
 
     prompts = {
         "保守派风险官": f"""你是“保守派风险官”，目标是避免过度反应，强调证据与稳健。
 {common_rules}
+{resource_rule}
 输入如下：
 {ctx}
 """,
         "危机派应急官": f"""你是“危机派应急官”，目标是识别最坏情境与脆弱环节，提前布防，但仍不得编造。
 {common_rules}
+{resource_rule}
 输入如下：
 {ctx}
 """,
         "机制/数据审计官": f"""你是“机制/数据审计官”，只做一致性审计与逻辑校验：哪些推断站得住，哪些是过推；指出矛盾与缺口。
 {common_rules}
+{resource_rule}
 输入如下：
 {ctx}
 """,
         "民生/社会心理官": f"""你是“民生/社会心理官”，评估公众行为、舆情传播、群体事件的现实边界与反馈回路，给出更贴近实际的预判。
 {common_rules}
+{resource_rule}
 输入如下：
 {ctx}
 """,
@@ -1436,10 +1450,11 @@ def multi_perspective_assess(event: str, empirical: str, timeline, swan: str, ma
     # 裁决：汇总分歧、给出情景区间与最终综合建议
     arb_rules = """你是“裁决官”。你必须：
 1) 逐条列出四个视角的主要分歧点（至少3条）；
-2) 给出综合判断与综合预测，并输出三情景：保守/基准/悲观（每个 80-140 字）；
-3) 给出综合置信度（0-1），以及最关键的 5 条触发条件与 6 条建议。
+2) 基于四视角输出，提炼“综合主要观点”（5-8条），并输出三情景：保守/基准/悲观（每个 80-140 字）；
+3) 给出综合资源关联分级（高度相关/中度相关/低相关），并解释为何不是所有资源都相关（1-2句）；
+4) 给出综合置信度（0-1），以及最关键的 5 条触发条件与 6 条建议。
 4) 严禁编造输入中没有的事实或数字。
-严格返回结构化对象，字段：分歧点（列表）、综合判断、综合预测、情景区间（对象含 保守/基准/悲观）、综合置信度、触发条件（列表）、建议（列表）。
+严格返回结构化对象，字段：分歧点（列表）、综合主要观点（列表）、情景区间（对象含 保守/基准/悲观）、综合资源关联（对象）、综合置信度、触发条件（列表）、建议（列表）。
 """
     arb_prompt = f"""{arb_rules}
 输入上下文：
@@ -1474,12 +1489,19 @@ def _format_mp_block(mp: dict) -> str:
         if v.get("错误"):
             out += f"- 调用异常：{v.get('错误')}\n\n"
             continue
-        out += f"- 判断：{str(v.get('判断','')).strip()}\n"
-        out += f"- 预测：{str(v.get('预测','')).strip()}\n"
-        out += f"- 置信度：{v.get('置信度','')}\n"
-        out += f"- 假设：\n{_fmt_list(v.get('假设'))}\n"
+        out += f"- 主要观点（提炼）：\n{_fmt_list(v.get('主要观点'))}\n"
+        ra = v.get("资源关联") or {}
+        if isinstance(ra, dict):
+            out += "- 资源关联（分级）：\n"
+            out += f"  - 高度相关：{str(ra.get('高度相关', ra.get('高相关', '—')))[:200]}\n"
+            out += f"  - 中度相关：{str(ra.get('中度相关', '—'))[:200]}\n"
+            out += f"  - 低相关：{str(ra.get('低相关', '—'))[:200]}\n"
+        else:
+            out += f"- 资源关联：{str(ra)[:300]}\n"
+        out += f"- 风险点：\n{_fmt_list(v.get('风险点'))}\n"
         out += f"- 触发条件：\n{_fmt_list(v.get('触发条件'))}\n"
-        out += f"- 建议：\n{_fmt_list(v.get('建议'))}\n\n"
+        out += f"- 建议：\n{_fmt_list(v.get('建议'))}\n"
+        out += f"- 置信度：{v.get('置信度','')}\n\n"
 
     # arbitration
     out += "### 裁决：综合结论（裁决官）\n\n"
@@ -1487,8 +1509,7 @@ def _format_mp_block(mp: dict) -> str:
         out += f"- 调用异常：{arb.get('错误')}\n"
         return out
     out += f"- 分歧点：\n{_fmt_list(arb.get('分歧点'))}\n"
-    out += f"- 综合判断：{str(arb.get('综合判断','')).strip()}\n"
-    out += f"- 综合预测：{str(arb.get('综合预测','')).strip()}\n"
+    out += f"- 综合主要观点（提炼）：\n{_fmt_list(arb.get('综合主要观点'))}\n"
     out += f"- 情景区间：\n"
     sc = arb.get("情景区间") or {}
     if isinstance(sc, dict):
@@ -1497,6 +1518,14 @@ def _format_mp_block(mp: dict) -> str:
         out += f"  - 悲观：{str(sc.get('悲观','')).strip()}\n"
     else:
         out += f"  - {str(sc)[:600]}\n"
+    cra = arb.get("综合资源关联") or {}
+    if isinstance(cra, dict):
+        out += "- 综合资源关联（分级）：\n"
+        out += f"  - 高度相关：{str(cra.get('高度相关', cra.get('高相关', '—')))[:200]}\n"
+        out += f"  - 中度相关：{str(cra.get('中度相关', '—'))[:200]}\n"
+        out += f"  - 低相关：{str(cra.get('低相关', '—'))[:200]}\n"
+    else:
+        out += f"- 综合资源关联：{str(cra)[:300]}\n"
     out += f"- 综合置信度：{arb.get('综合置信度','')}\n"
     out += f"- 触发条件：\n{_fmt_list(arb.get('触发条件'))}\n"
     out += f"- 建议：\n{_fmt_list(arb.get('建议'))}\n\n"
@@ -2145,87 +2174,16 @@ elif st.session_state.timeline:
     st.divider()
     st.subheader("⏪ 演化推演回放")
     max_step = len(st.session_state.timeline) - 1
-    # 自动播放：每轮 rerun 推进一帧，直到结束
-    if st.session_state.get("autoplay_running"):
-        idx = min(st.session_state.playback_index + 1, max_step)
-        st.session_state.playback_index = idx
-        if idx >= max_step:
-            st.session_state.autoplay_running = False
-        time.sleep(1.2)
-        st.rerun()
-    pb_cols = st.columns([4,1])
+    pb_cols = st.columns([1])
     with pb_cols[0]:
         playback = st.slider("回放阶段", 0, max_step, st.session_state.playback_index, key="playback_slider")
-    with pb_cols[1]:
-        st.markdown("<br>", unsafe_allow_html=True)
-        auto = st.button("▶️ 自动播放")
-    if auto:
-        st.session_state.autoplay_running = True
-        st.session_state.playback_index = 0
-        st.rerun()
     st.session_state.playback_index = playback
     play_data = st.session_state.timeline[playback]["data"]
-    # 场景分支：从当前步创建分支
-    with st.expander("🌿 从本步创建分支（对比不同干预路径）", expanded=False):
-        branch_interv = st.selectbox("假设从本步起改用干预策略", ["无","紧急物资投放","媒体安抚","加强安保","全城宵禁","电力抢修"], key="branch_intervention")
-        branch_name = st.text_input("分支名称（可选）", value=f"第{playback+1}步起→{branch_interv}", key="branch_name")
-        if st.button("创建并推演分支", key="create_branch_btn"):
-            with st.spinner("正在推演分支..."):
-                branch_data = run_branch_from_step(playback, branch_interv, event, st.session_state.get("facts",""))
-                branch_data["name"] = branch_name or f"分支-第{playback+1}步起→{branch_interv}"
-                st.session_state.scenario_branches = st.session_state.get("scenario_branches") or []
-                st.session_state.scenario_branches.append(branch_data)
-                st.success(f"分支「{branch_name}」推演完成，可在下方查看对比")
-                st.rerun()
     st.info(f"📌 第 {playback+1} 阶段 演化内容")
     st.markdown(f"**官方**：{play_data.get('official', '—')}")
     st.markdown(f"**民众**：{play_data.get('citizen', '—')}")
     st.markdown(f"**媒体**：{play_data.get('media', '—')}")
     st.markdown(f"**审计**：{play_data.get('audit', '—')}")
-
-    # 5.1 实体与知识图
-    with st.expander("🕸️ 实体与知识图谱", expanded=False):
-        if st.button("提取实体与关系", key="extract_entities_btn"):
-            with st.spinner("正在抽取..."):
-                eg = extract_entity_graph(event, st.session_state.get("facts",""))
-                st.session_state.entity_graph = eg
-        eg = st.session_state.get("entity_graph") or {}
-        if eg.get("entities") or eg.get("relations"):
-            e_col1, e_col2 = st.columns(2)
-            with e_col1:
-                st.markdown("**实体**")
-                for ent in eg.get("entities", []):
-                    st.write(f"- {ent.get('name','')}（{ent.get('type','')}）")
-            with e_col2:
-                st.markdown("**关系**")
-                for rel in eg.get("relations", []):
-                    st.write(f"- {rel.get('source','')} → {rel.get('target','')}：{rel.get('relation','')}")
-            # 简单网络图（需 networkx，可选）
-            try:
-                import networkx as nx
-                G = nx.DiGraph()
-                for e in eg.get("entities", []):
-                    G.add_node(e.get("name", ""), type=e.get("type", ""))
-                for r in eg.get("relations", []):
-                    G.add_edge(r.get("source",""), r.get("target",""), label=r.get("relation",""))
-                if G.number_of_nodes() > 0:
-                    pos = nx.spring_layout(G, seed=42)
-                    edge_trace = go.Scatter(x=[], y=[], line=dict(width=1, color="#888"), hoverinfo="text", mode="lines")
-                    node_trace = go.Scatter(x=[], y=[], text=[], mode="markers+text", marker=dict(size=20, color="#58a6ff"), textposition="top center")
-                    for e in G.edges():
-                        x0, y0 = pos[e[0]]
-                        x1, y1 = pos[e[1]]
-                        edge_trace["x"] += (x0, x1, None)
-                        edge_trace["y"] += (y0, y1, None)
-                    for n in G.nodes():
-                        node_trace["x"] += (pos[n][0],)
-                        node_trace["y"] += (pos[n][1],)
-                        node_trace["text"] += (n,)
-                    fig_g = go.Figure(data=[edge_trace, node_trace])
-                    fig_g.update_layout(title="知识图谱", showlegend=False, height=300)
-                    st.plotly_chart(fig_g, use_container_width=True)
-            except ImportError:
-                st.caption("如需显示关系图谱，请安装可选的图谱依赖库。")
 
     # 6. 因果链 + 黑天鹅
     st.divider()
@@ -2245,7 +2203,7 @@ elif st.session_state.timeline:
 
     # 7. 报告 + 导出
     st.divider()
-    st.subheader("📝 国家级战略研判报告")
+    st.subheader("📝 战略研判报告")
     st.markdown(f"<div class='report-card'>{st.session_state.report}</div>", unsafe_allow_html=True)
 
     # 若存在上传文档的全文内容分析报告，则一并展示，体现“基于全部内容的分析研判”
