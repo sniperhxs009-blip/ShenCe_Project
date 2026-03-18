@@ -23,6 +23,24 @@ import io
 import time
 import re
 import math
+
+# 引入外部文件解析模块（与 file-report-generator 保持一致的解析逻辑）
+EXTERNAL_PARSER_AVAILABLE = False
+try:
+    FILE_PARSER_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "file-report-generator")
+    if os.path.isdir(FILE_PARSER_ROOT):
+        if FILE_PARSER_ROOT not in sys.path:
+            sys.path.append(FILE_PARSER_ROOT)
+        try:
+            from document_parser import parse_document as ext_parse_document
+            EXTERNAL_PARSER_AVAILABLE = True
+        except Exception:
+            ext_parse_document = None  # type: ignore
+    else:
+        ext_parse_document = None  # type: ignore
+except Exception:
+    ext_parse_document = None  # type: ignore
+
 _dbg("7-基础库完成")
 
 # PDF 解析：优先 PyMuPDF（质量更好），其次 pypdf
@@ -245,15 +263,40 @@ def _decode_text(raw: bytes, max_len: int = 60000) -> str:
     return raw.decode("utf-8", errors="replace")[:max_len]
 
 def parse_uploaded_document(uploaded_file) -> str:
-    """解析上传的 PDF、TXT、DOCX、MD，返回纯文本。PDF 优先 PyMuPDF，Word 含表格提取。"""
+    """解析上传的 PDF、TXT、DOCX、MD，返回纯文本。
+    优先使用与 file-report-generator 一致的解析逻辑，确保读取结果完全一致；
+    若外部解析模块不可用，再回退到本地实现（PyMuPDF/pypdf/docx/OCR）。
+    """
     if not uploaded_file:
         return ""
     try:
         name = (uploaded_file.name or "").lower()
         raw = uploaded_file.read()
-        max_chars = 60000  # 支持较长报告（如年报）
+        max_chars = 60000  # 本地兜底解析时的最大长度限制（外部解析不截断，以保持一致）
         max_pages = 80  # 页数过多会导致首次解析过慢
 
+        # 1) 若存在外部解析模块（来自 file-report-generator），则走与独立网页完全一致的解析路径
+        if EXTERNAL_PARSER_AVAILABLE and name:
+            ext = os.path.splitext(name)[1].lower()
+            if ext in [".pdf", ".docx", ".doc", ".txt"]:
+                tmp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_uploaded_tmp")
+                os.makedirs(tmp_dir, exist_ok=True)
+                # 简单安全的文件名处理，避免路径注入
+                base = os.path.basename(name)
+                safe = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff\._-]", "_", base)
+                tmp_path = os.path.join(tmp_dir, safe or "uploaded")
+                try:
+                    with open(tmp_path, "wb") as f:
+                        f.write(raw)
+                    # 与 file-report-generator 中的行为保持一致：不额外截断内容
+                    return str(ext_parse_document(tmp_path) or "")
+                finally:
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+
+        # 2) 外部解析不可用时，回退到原有本地解析逻辑
         if name.endswith(".txt"):
             return _decode_text(raw, max_chars)
         if name.endswith(".md") or name.endswith(".markdown"):
