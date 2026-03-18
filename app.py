@@ -234,6 +234,7 @@ init_keys = [
     "stepping_matrix", "stepping_resources", "stepping_infra", "stepping_factors",
     "perspective_chat_history",
     "scenario_branches", "current_branch_view", "entity_graph", "history_scenarios",
+    "similar_cases",
 ]
 for k in init_keys:
     if k not in st.session_state:
@@ -1282,6 +1283,46 @@ def get_evidence_items(q: str) -> tuple[str, list[dict]]:
     except Exception:
         return "实证检索失败，使用内部模型", []
 
+def search_similar_cases(event_text: str, num: int = 6) -> list[dict]:
+    """
+    全网检索相似案例（基于检索接口）。返回列表：[{case_id,title,link,snippet}]
+    仅用于“相似案例对比”展示与报告，不替代实证证据链。
+    """
+    if not serper_key:
+        return []
+    q = (event_text or "").strip()
+    if not q:
+        return []
+    try:
+        r = requests.post(
+            "https://google.serper.dev/search",
+            headers={"X-API-KEY": serper_key, "Content-Type": "application/json"},
+            json={
+                "q": f"{q} 相似案例 后果 影响 处置 复盘",
+                "num": int(max(3, min(10, num))),
+            },
+            timeout=12,
+        )
+        organic = (r.json() or {}).get("organic", []) or []
+        out = []
+        for idx, x in enumerate(organic, start=1):
+            title = x.get("title", "") or ""
+            link = x.get("link", "") or ""
+            snippet = x.get("snippet", "") or ""
+            if not (title.strip() or snippet.strip()):
+                continue
+            out.append(
+                {
+                    "case_id": f"C{idx:02d}",
+                    "title": title[:160],
+                    "link": link,
+                    "snippet": snippet[:500],
+                }
+            )
+        return out[: int(max(1, min(10, num)))]
+    except Exception:
+        return []
+
 def _default_matrix():
     return {"行政效能": 50, "焦虑指数": 50, "资源缺口": 50, "动荡风险": 50}
 
@@ -1533,11 +1574,25 @@ def _format_mp_block(mp: dict) -> str:
 
 def gen_report(event, facts, timeline, swan, matrix, resources):
     empirical = facts
+    similar_cases = st.session_state.get("similar_cases") if hasattr(st, "session_state") else None
+    similar_cases = similar_cases or []
+    similar_cases_text = ""
+    if isinstance(similar_cases, list) and similar_cases:
+        lines = []
+        for it in similar_cases[:6]:
+            if isinstance(it, dict):
+                cid = it.get("case_id", "")
+                title = (it.get("title", "") or "").strip()
+                snippet = (it.get("snippet", "") or "").strip()
+                if title or snippet:
+                    lines.append(f"- {cid}：{title}\n  摘要：{snippet}")
+        if lines:
+            similar_cases_text = "\n\n【相似案例检索结果（用于对比）】\n" + "\n".join(lines)
     prompt = f"""
 你是国家级战略安全顾问，生成正式研判报告。
 
 事件：{event}
-实证材料：{empirical}
+实证材料：{empirical}{similar_cases_text}
 演化时序：{timeline}
 黑天鹅：{swan}
 社会状态：{matrix}
@@ -1545,6 +1600,7 @@ def gen_report(event, facts, timeline, swan, matrix, resources):
 
 若实证材料中包含【用户上传的种子材料】，请直接从该材料全文理解分析对象（企业名、年度、文档类型等），并据此撰写报告，不得臆造。若无上传材料则基于事件与演化结果研判。
 报告必须包含：1. 事件定级 2. 物理瘫痪分析 3. 社会临界点 4. 演化复盘 5. 风险预警 6. 干预建议 7. 结论
+如提供了【相似案例检索结果】，请增加一节“相似案例对比”，对比本事件与案例的相同点/差异点/可迁移教训，并明确哪些推断仅是类比、哪些与本事件证据一致。
 """
     try:
         base_report = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}], timeout=60).choices[0].message.content
@@ -1909,6 +1965,9 @@ if should_autorun:
                     evidence_items = []
                 else:
                     facts, evidence_items = get_evidence_items(event)
+                # 相似案例检索（用于展示与报告对比）
+                s.update(label="🔎 检索相似案例与可能后果")
+                st.session_state.similar_cases = search_similar_cases(event, num=6)
                 st.session_state.event = event
                 st.session_state.facts = facts
                 st.session_state.evidence_items = evidence_items
@@ -2026,6 +2085,31 @@ elif st.session_state.timeline:
 <h2 style='color:{colors[i]}'>{m[k]}%</h2>
 </div>
 """, unsafe_allow_html=True)
+
+    # 相似案例检索结果展示（含来源链接按钮）
+    cases = st.session_state.get("similar_cases") or []
+    if isinstance(cases, list) and cases:
+        with st.expander("🔎 相似案例检索结果（自动）", expanded=True):
+            st.caption("以下为全网检索到的相似案例条目与摘要，可用于对比本事件可能后果与处置经验。")
+            for it in cases[:8]:
+                if not isinstance(it, dict):
+                    continue
+                cid = it.get("case_id", "")
+                title = (it.get("title", "") or "").strip()
+                snippet = (it.get("snippet", "") or "").strip()
+                link = (it.get("link", "") or "").strip()
+                if not (title or snippet):
+                    continue
+                st.markdown(f"**{cid}｜{title}**")
+                if snippet:
+                    st.write(snippet)
+                if link:
+                    # 仅展示中文按钮文本，链接本身不直接打印在界面上
+                    try:
+                        st.link_button("打开来源链接", link)
+                    except Exception:
+                        st.markdown(f"[打开来源链接]({link})")
+                st.divider()
 
     # 2. 资源与基础设施面板：按需求仅隐藏界面展示，后台仍保留计算与数据
 
