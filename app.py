@@ -88,7 +88,7 @@ st.markdown("""
 }
 .logic-box { 
     background-color: #f8f9fa; padding: 25px; border-left: 10px solid #58a6ff; 
-    border-radius: 6px; margin: 20px 0; font-family: 'Consolas', monospace; 
+    border-radius: 6px; margin: 20px 0; font-family: monospace; 
     color: #555555; border: 1px solid #e0e0e0;
 }
 .report-card { 
@@ -107,11 +107,15 @@ st.markdown("""
 """, unsafe_allow_html=True)
 _dbg("10-CSS样式")
 
-# --- 侧边栏 API ---
-st.sidebar.header("🔑 API 配置")
-openai_key = st.sidebar.text_input("DeepSeek API Key（兼容 OpenAI SDK）", type="password")
-base_url = st.sidebar.text_input("Base URL", value="https://api.deepseek.com/v1")
-serper_key = st.sidebar.text_input("Serper API Key", type="password")
+# --- 侧边栏接口配置（界面不出现英文） ---
+st.sidebar.header("🔑 接口配置")
+openai_key = st.sidebar.text_input("模型接口密钥", type="password")
+base_url_input = st.sidebar.text_input("接口地址（可选）", value="", placeholder="留空则使用系统默认接口地址")
+serper_key = st.sidebar.text_input("检索接口密钥（可选）", type="password")
+
+# 默认接口地址（不在界面直接展示英文网址）
+DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
+base_url = base_url_input.strip() or DEFAULT_BASE_URL
 
 client = None
 if openai_key:
@@ -122,8 +126,8 @@ _dbg("11-侧栏API区")
 st.sidebar.header("🧪 仿真模式")
 sim_mode = st.sidebar.selectbox(
     "模式",
-    ["高保真（机制内核 + 可审计）", "叙事（AI 主导）"],
-    help="高保真模式：指标与资源由机制模型计算，AI 仅做文字解读并受审计约束；叙事模式：主要由模型生成并辅以随机扰动。"
+    ["高保真（机制内核 + 可审计）", "叙事（模型主导）"],
+    help="高保真模式：指标与资源由机制模型计算，模型仅做文字解读并受审计约束；叙事模式：主要由模型生成并辅以随机扰动。"
 )
 seed = st.sidebar.number_input("随机种子（可复现）", min_value=0, max_value=10_000_000, value=2026, step=1)
 force_crisis_mode = st.sidebar.checkbox(
@@ -171,8 +175,8 @@ with st.sidebar.expander("🎛️ 高保真参数校准（进阶）", expanded=F
     total_duration_days = dur_cols[1].number_input("总推演时长（天）", min_value=0.0, max_value=60.0, value=0.0, step=0.5, help="可选：用天输入总时长；若>0 将优先于“小时”。")
     st.caption("起止时间（可选，用于昼夜节律与审计对齐）")
     time_cols = st.columns(2)
-    start_time_str = time_cols[0].text_input("开始时间（YYYY-MM-DD HH:MM）", value="", placeholder="如：2026-03-17 08:00")
-    end_time_str = time_cols[1].text_input("结束时间（YYYY-MM-DD HH:MM）", value="", placeholder="如：2026-03-19 20:00")
+    start_time_str = time_cols[0].text_input("开始时间（年-月-日 时:分）", value="", placeholder="如：2026-03-17 08:00")
+    end_time_str = time_cols[1].text_input("结束时间（年-月-日 时:分）", value="", placeholder="如：2026-03-19 20:00")
 
     circadian = st.checkbox("启用昼夜节律（高保真）", value=True, help="启用后，每一步会映射到具体时刻，夜间焦虑/动荡更敏感，白天执行更强。")
     night_anxiety_boost = st.slider("夜间焦虑增益", 0.0, 1.0, 0.25, 0.05)
@@ -344,7 +348,7 @@ def parse_uploaded_document(uploaded_file) -> str:
                     pass
             return out[:max_chars] if out else ""
         if name.endswith(".pdf") and not PDF_AVAILABLE:
-            return "[PDF 解析需要安装 pypdf 或 pymupdf：pip install pymupdf]"
+            return "[文档解析提示：当前环境未启用便携文档解析组件]"
 
         if name.endswith(".docx") and DOCX_AVAILABLE:
             doc = DocxDocument(io.BytesIO(raw))
@@ -363,7 +367,7 @@ def parse_uploaded_document(uploaded_file) -> str:
                 parts.append("")  # 表格行间空行
             return "\n".join(parts)[:max_chars]
         if (name.endswith(".docx") or name.endswith(".doc")) and not DOCX_AVAILABLE:
-            return "[Word 解析需要安装 python-docx：pip install python-docx]"
+            return "[文档解析提示：当前环境未启用文字文档解析组件]"
         if name.endswith(".doc"):
             return "[仅支持 .docx 格式，请另存为 docx 后上传]"
     except Exception as e:
@@ -1231,9 +1235,9 @@ def narrate_from_mechanism(event: str, facts: str, step: int, intervention: str,
     except Exception as e:
         return {
             "official": f"[叙事生成异常] {str(e)[:80]}",
-            "citizen": "叙事生成失败（请检查 API）。",
-            "media": "叙事生成失败（请检查 API）。",
-            "audit": "叙事生成失败（请检查 API）。"
+            "citizen": "叙事生成失败（请检查接口配置）。",
+            "media": "叙事生成失败（请检查接口配置）。",
+            "audit": "叙事生成失败（请检查接口配置）。"
         }
 
 def get_evidence(q):
@@ -1316,10 +1320,10 @@ def evolve_step(event, facts, matrix, step, intervention, resources):
         return safe_json(res.choices[0].message.content)
     except Exception as e:
         return {
-            "official": f"[API 异常] 官方应对：{str(e)[:80]}",
-            "citizen": "[API 异常] 民众反应数据暂不可用",
-            "media": "[API 异常] 媒体视角数据暂不可用",
-            "audit": "[API 异常] 审计结论暂不可用"
+            "official": f"[接口异常] 官方应对：{str(e)[:80]}",
+            "citizen": "[接口异常] 民众反应数据暂不可用",
+            "media": "[接口异常] 媒体视角数据暂不可用",
+            "audit": "[接口异常] 审计结论暂不可用"
         }
 
 def update_state(old, evo, intervention):
@@ -1362,12 +1366,12 @@ def gen_causal(event):
         prompt = f"为 {event} 生成PESTEL全维度因果链，结构化输出"
         return client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}]).choices[0].message.content
     except Exception as e:
-        return f"[因果链生成异常] {str(e)[:100]}\n请检查 API 配置后重新运行。"
+        return f"[因果链生成异常] {str(e)[:100]}\n请检查接口配置后重新运行。"
 
 def _mp_call_json(role_name: str, prompt: str, timeout: int = 45) -> dict:
-    """多视角研判调用：强制 JSON 输出并容错解析。"""
+    """多视角研判调用：强制结构化输出并容错解析。"""
     if not client:
-        return {"error": "no_client", "role": role_name}
+        return {"错误": "未配置接口", "视角": role_name}
     try:
         res = client.chat.completions.create(
             model="deepseek-chat",
@@ -1377,15 +1381,15 @@ def _mp_call_json(role_name: str, prompt: str, timeout: int = 45) -> dict:
         )
         j = safe_json(res.choices[0].message.content)
         if not isinstance(j, dict):
-            j = {"raw": str(j)}
-        j.setdefault("role", role_name)
+            j = {"原始输出": str(j)}
+        j.setdefault("视角", role_name)
         return j
     except Exception as e:
-        return {"role": role_name, "error": str(e)[:160]}
+        return {"视角": role_name, "错误": str(e)[:160]}
 
 def multi_perspective_assess(event: str, empirical: str, timeline, swan: str, matrix: dict, resources: dict) -> dict:
     """
-    4 视角 + 1 裁决的综合研判：每个视角输出 judgement + forecast + confidence + assumptions + triggers + recommendations。
+    四视角 + 一裁决的综合研判：每个视角输出 判断/预测/置信度/假设/触发条件/建议。
     最后裁决视角输出综合结论与情景区间。
     """
     ctx = f"""事件：{event}
@@ -1398,8 +1402,8 @@ def multi_perspective_assess(event: str, empirical: str, timeline, swan: str, ma
     common_rules = """你必须遵守：
 1) 不得编造任何未在输入中出现的事实或数字；
 2) 若信息不足必须明确写“不确定/需补充”；
-3) 必须输出 JSON，包含字段：judgement（判断）、forecast（推演预测）、confidence（0-1）、assumptions（要点列表）、triggers（触发条件列表）、recommendations（建议列表）。
-4) judgement 与 forecast 必须分开写清楚，且每段 120-220 字。
+3) 必须输出结构化对象，仅包含字段：判断、预测、置信度（0-1）、假设（要点列表）、触发条件（列表）、建议（列表）。
+4) “判断”与“预测”必须分开写清楚，且每段 120-220 字。
 """
 
     prompts = {
@@ -1430,17 +1434,17 @@ def multi_perspective_assess(event: str, empirical: str, timeline, swan: str, ma
         views[role_name] = _mp_call_json(role_name, p, timeout=45)
 
     # 裁决：汇总分歧、给出情景区间与最终综合建议
-    arb_rules = """你是“裁决/汇总官”。你必须：
+    arb_rules = """你是“裁决官”。你必须：
 1) 逐条列出四个视角的主要分歧点（至少3条）；
-2) 给出综合 judgement（判断）与综合 forecast（推演预测），并输出三情景：保守/基准/悲观（每个 80-140 字）；
-3) 给出综合 confidence（0-1），以及最关键的 5 条 triggers（触发条件）与 6 条 recommendations（建议）。
+2) 给出综合判断与综合预测，并输出三情景：保守/基准/悲观（每个 80-140 字）；
+3) 给出综合置信度（0-1），以及最关键的 5 条触发条件与 6 条建议。
 4) 严禁编造输入中没有的事实或数字。
-严格返回 JSON，字段：disagreements（列表）、judgement、forecast、scenarios（对象含 conservative/base/bear）、confidence、triggers（列表）、recommendations（列表）。
+严格返回结构化对象，字段：分歧点（列表）、综合判断、综合预测、情景区间（对象含 保守/基准/悲观）、综合置信度、触发条件（列表）、建议（列表）。
 """
     arb_prompt = f"""{arb_rules}
 输入上下文：
 {ctx}
-四视角输出（JSON）：
+四视角输出：
 {json.dumps(views, ensure_ascii=False)[:12000]}
 """
     arbitration = _mp_call_json("裁决/汇总官", arb_prompt, timeout=60)
@@ -1462,40 +1466,40 @@ def _format_mp_block(mp: dict) -> str:
             return "\n".join([f"- {str(x)[:220]}" for x in xs[:12]]) or "—"
         return str(xs)[:600]
 
-    out = "## 九、多视角研判（4 视角 + 1 裁决）\n\n"
+    out = "## 九、多视角研判（四视角 + 一裁决）\n\n"
     # 4 views
     for role_name in ["保守派风险官", "危机派应急官", "机制/数据审计官", "民生/社会心理官"]:
         v = views.get(role_name) or {}
         out += f"### 视角：{role_name}\n\n"
-        if v.get("error"):
-            out += f"- 调用异常：{v.get('error')}\n\n"
+        if v.get("错误"):
+            out += f"- 调用异常：{v.get('错误')}\n\n"
             continue
-        out += f"- judgement：{str(v.get('judgement','')).strip()}\n"
-        out += f"- forecast：{str(v.get('forecast','')).strip()}\n"
-        out += f"- confidence：{v.get('confidence','')}\n"
-        out += f"- assumptions：\n{_fmt_list(v.get('assumptions'))}\n"
-        out += f"- triggers：\n{_fmt_list(v.get('triggers'))}\n"
-        out += f"- recommendations：\n{_fmt_list(v.get('recommendations'))}\n\n"
+        out += f"- 判断：{str(v.get('判断','')).strip()}\n"
+        out += f"- 预测：{str(v.get('预测','')).strip()}\n"
+        out += f"- 置信度：{v.get('置信度','')}\n"
+        out += f"- 假设：\n{_fmt_list(v.get('假设'))}\n"
+        out += f"- 触发条件：\n{_fmt_list(v.get('触发条件'))}\n"
+        out += f"- 建议：\n{_fmt_list(v.get('建议'))}\n\n"
 
     # arbitration
-    out += "### 裁决：综合结论（汇总官）\n\n"
-    if arb.get("error"):
-        out += f"- 调用异常：{arb.get('error')}\n"
+    out += "### 裁决：综合结论（裁决官）\n\n"
+    if arb.get("错误"):
+        out += f"- 调用异常：{arb.get('错误')}\n"
         return out
-    out += f"- disagreements：\n{_fmt_list(arb.get('disagreements'))}\n"
-    out += f"- judgement：{str(arb.get('judgement','')).strip()}\n"
-    out += f"- forecast：{str(arb.get('forecast','')).strip()}\n"
-    out += f"- scenarios：\n"
-    sc = arb.get("scenarios") or {}
+    out += f"- 分歧点：\n{_fmt_list(arb.get('分歧点'))}\n"
+    out += f"- 综合判断：{str(arb.get('综合判断','')).strip()}\n"
+    out += f"- 综合预测：{str(arb.get('综合预测','')).strip()}\n"
+    out += f"- 情景区间：\n"
+    sc = arb.get("情景区间") or {}
     if isinstance(sc, dict):
-        out += f"  - conservative：{str(sc.get('conservative','')).strip()}\n"
-        out += f"  - base：{str(sc.get('base','')).strip()}\n"
-        out += f"  - bear：{str(sc.get('bear','')).strip()}\n"
+        out += f"  - 保守：{str(sc.get('保守','')).strip()}\n"
+        out += f"  - 基准：{str(sc.get('基准','')).strip()}\n"
+        out += f"  - 悲观：{str(sc.get('悲观','')).strip()}\n"
     else:
         out += f"  - {str(sc)[:600]}\n"
-    out += f"- confidence：{arb.get('confidence','')}\n"
-    out += f"- triggers：\n{_fmt_list(arb.get('triggers'))}\n"
-    out += f"- recommendations：\n{_fmt_list(arb.get('recommendations'))}\n\n"
+    out += f"- 综合置信度：{arb.get('综合置信度','')}\n"
+    out += f"- 触发条件：\n{_fmt_list(arb.get('触发条件'))}\n"
+    out += f"- 建议：\n{_fmt_list(arb.get('建议'))}\n\n"
     return out
 
 def gen_report(event, facts, timeline, swan, matrix, resources):
@@ -1522,7 +1526,7 @@ def gen_report(event, facts, timeline, swan, matrix, resources):
             return f"{base_report}\n\n---\n\n{mp_block}"
         return base_report
     except Exception as e:
-        return f"【报告生成异常】API 调用失败：{str(e)[:120]}\n请检查网络与 API 配置后重新运行仿真并导出报告。"
+        return f"【报告生成异常】接口调用失败：{str(e)[:120]}\n请检查网络与接口配置后重新运行推演并导出报告。"
 
 def classify_event_relevance(event: str) -> dict:
     """
@@ -1531,7 +1535,7 @@ def classify_event_relevance(event: str) -> dict:
     返回 {"is_crisis_simulation": bool, "reason": str}
     """
     if not client:
-        return {"is_crisis_simulation": True, "reason": "无API时默认启用危机推演"}
+        return {"is_crisis_simulation": True, "reason": "未配置接口时默认启用危机推演"}
     prompt = """你是一个意图分类器。判断用户的输入是否适合进行「政府/社会危机推演仿真」。
 
 以下情况应返回 is_crisis_simulation=true：
@@ -1650,7 +1654,7 @@ def _save_to_history(scenario_name: str, event: str, report: str, matrix_history
 def chat_with_perspective(perspective: str, perspective_narrative: str, user_question: str, context: str) -> str:
     """与某一视角（官方/民众/媒体/审计）对话，基于其叙事与推演上下文回答。"""
     if not client:
-        return "[需要配置 API] 请配置 API Key 后使用与视角对话功能。"
+        return "[需要配置接口] 请先配置接口密钥后使用与视角对话功能。"
     role_map = {"官方": "官方决策者", "民众": "普通民众代表", "媒体": "媒体评论员", "审计": "独立审计专家"}
     role = role_map.get(perspective, perspective)
     prompt = f"""你在扮演推演系统中的「{role}」视角。以下是该视角在推演中的叙事与立场摘要：
@@ -1677,7 +1681,7 @@ def gen_creative_response(event: str) -> str:
     当用户输入与政府/社会危机无关时，直接按用户意图完成任务（如续写、预测走向等）。
     """
     if not client:
-        return f"[需要配置 API] 您的请求：{event}\n\n系统判断该请求与政府社会危机推演无关，应直接完成您的创作或预测需求。请配置 API 后重试。"
+        return f"[需要配置接口] 您的请求：{event}\n\n系统判断该请求与政府社会危机推演无关，应直接完成您的创作或预测需求。请配置接口后重试。"
     prompt = f"""用户的请求与政府政策、社会资源、公共危机无关，请不要进行危机推演分析。
 
 用户请求：{event}
@@ -1695,7 +1699,7 @@ def gen_creative_response(event: str) -> str:
             timeout=90,
         ).choices[0].message.content
     except Exception as e:
-        return f"[生成异常] {str(e)[:120]}\n请检查 API 配置后重试。"
+        return f"[生成异常] {str(e)[:120]}\n请检查接口配置后重试。"
 
 def export_pdf(report: str, doc_appendix: str = ""):
     pdf = FPDF()
@@ -1708,7 +1712,7 @@ def export_pdf(report: str, doc_appendix: str = ""):
     if doc_appendix and not doc_appendix.startswith("["):
         pdf.add_page()
         pdf.set_font("Arial", size=11, style="B")
-        pdf.multi_cell(0, 8, "Appendix: Seed Document Key Points / 种子材料要点")
+        pdf.multi_cell(0, 8, "附录：种子材料要点")
         pdf.set_font("Arial", size=10)
         try:
             pdf.multi_cell(0, 6, doc_appendix[:4000])
@@ -1723,7 +1727,7 @@ st.title("事件推演仿真系统")
 # 文本种子输入（替代上传，直接粘贴全文用于研判）
 st.subheader("📝 文本种子输入（用于综合分析研判）")
 seed_text = st.text_area(
-    "在此粘贴需要研判的完整文本内容（可来自 PDF、Word、报告等）",
+    "在此粘贴需要研判的完整文本内容（可来自各类文档、报告等）",
     value=st.session_state.get("uploaded_doc_text", ""),
     height=220,
     placeholder="将需要分析研判的全文粘贴到这里，例如年报、专项报告、政策文件、调查材料等。\n系统会直接基于这些文字做内容分析与最终综合研判。",
@@ -1955,7 +1959,7 @@ if should_autorun:
             st.session_state["_auto_run_sig"] = auto_sig
             st.success("推演完成！已自动完成全流程演化与研判报告生成。")
     except Exception as e:
-        st.error(f"仿真流程异常：{str(e)}。请检查 API Key、Base URL 与网络后重试。")
+        st.error(f"推演流程异常：{str(e)}。请检查接口密钥、接口地址与网络后重试。")
         if "matrix_history" in st.session_state and st.session_state.matrix_history:
             pass
         else:
@@ -2221,7 +2225,7 @@ elif st.session_state.timeline:
                     fig_g.update_layout(title="知识图谱", showlegend=False, height=300)
                     st.plotly_chart(fig_g, use_container_width=True)
             except ImportError:
-                st.caption("安装 networkx 可显示图谱：pip install networkx")
+                st.caption("如需显示关系图谱，请安装可选的图谱依赖库。")
 
     # 6. 因果链 + 黑天鹅
     st.divider()
@@ -2237,7 +2241,7 @@ elif st.session_state.timeline:
     if sim_mode.startswith("高保真") and st.session_state.get("hf_params"):
         hp = st.session_state.get("hf_params") or {}
         if hp.get("auto_steps_by_duration") and int(hp.get("total_duration_hours") or 0) > 0:
-            st.caption(f"时间设定（高保真）：总时长={int(hp['total_duration_hours'])}h，每步={float(hp.get('step_hours', 12.0))}h（步数自动计算并可能上限为 24）")
+            st.caption(f"时间设定（高保真）：总时长={int(hp['total_duration_hours'])}小时，每步={float(hp.get('step_hours', 12.0))}小时（步数自动计算并可能上限为 24）")
 
     # 7. 报告 + 导出
     st.divider()
@@ -2272,24 +2276,24 @@ elif st.session_state.timeline:
             "uploaded_doc_analysis": st.session_state.get("uploaded_doc_analysis", {}),
             "uploaded_doc_report": st.session_state.get("uploaded_doc_report", ""),
         }, ensure_ascii=False, indent=2)
-        fname_json = "SHENCE_数据.json"
-        st.download_button("💾 导出JSON数据包", json_data, fname_json, use_container_width=True)
+        fname_json = "推演数据包"
+        st.download_button("💾 导出数据包", json_data, fname_json, use_container_width=True)
     with d_cols[1]:
         csv_df = pd.DataFrame(st.session_state.matrix_history)
         csv_df.insert(0, "阶段", ["初始"] + [f"第{i}步" for i in range(1, len(csv_df))])
-        fname_csv = "SHENCE_指标演化.csv"
-        st.download_button("📊 导出指标CSV", csv_df.to_csv(index=False).encode("utf-8-sig"), fname_csv, "text/csv", use_container_width=True)
+        fname_csv = "指标演化表"
+        st.download_button("📊 导出指标表", csv_df.to_csv(index=False).encode("utf-8-sig"), fname_csv, "text/csv", use_container_width=True)
     with d_cols[2]:
         pdf_report = st.session_state.report
         pdf_doc_appendix = (st.session_state.get("uploaded_doc_text") or "")[:4000]
         if pdf_doc_appendix and pdf_doc_appendix.startswith("["):
             pdf_doc_appendix = ""
-        st.download_button("📄 导出PDF报告", export_pdf(pdf_report, pdf_doc_appendix), "SHENCE_研判报告.pdf", use_container_width=True)
+        st.download_button("📄 导出报告", export_pdf(pdf_report, pdf_doc_appendix), "研判报告", use_container_width=True)
     with d_cols[3]:
         if st.button("🔁 重置仿真", use_container_width=True, key="reset_bottom"):
             request_reset()
             st.rerun()
 
 elif not client:
-    st.warning("请在左侧填写 API Key 后启动仿真")
+    st.warning("请在左侧填写接口密钥后启动推演")
 _dbg("18-脚本执行完毕")
