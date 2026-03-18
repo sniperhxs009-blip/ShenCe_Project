@@ -1570,44 +1570,20 @@ scenario_name = st.text_input("📌 场景名称（可选）", value=st.session_
 if scenario_name:
     st.session_state.scenario_name = scenario_name
 
-# 文档种子上传（补充背景知识）
-st.subheader("📎 种子上传（可选）")
-uploaded_doc = st.file_uploader("上传 PDF、TXT、Word、Markdown 作为背景材料", type=["pdf", "txt", "docx", "md"], help="支持 .pdf .txt .docx .md，将融入推演的知识上下文")
-seed_url = st.text_input("或输入网页 URL 抓取内容", placeholder="https://...", key="seed_url_input")
-if st.button("🔄 加载网页", key="fetch_url_btn") and seed_url:
-    url_text = fetch_url_as_seed(seed_url)
-    st.session_state.uploaded_doc_text = url_text
-    if url_text and not url_text.startswith("["):
-        st.caption(f"已抓取 {len(url_text)} 字符")
-if uploaded_doc:
-    # 仅在文件变更时重新解析，避免每次 rerun 都耗时解析（PDF/OCR 很慢）
-    file_key = getattr(uploaded_doc, "file_id", None) or f"{uploaded_doc.name}_{uploaded_doc.size}"
-    if st.session_state.get("_doc_parse_key") != file_key:
-        with st.spinner("正在解析文档..."):
-            doc_text = parse_uploaded_document(uploaded_doc)
-        st.session_state.uploaded_doc_text = doc_text
-        st.session_state._doc_parse_key = file_key
-    if st.session_state.get("uploaded_doc_text") and not st.session_state.uploaded_doc_text.startswith("["):
-        doc_text = st.session_state.uploaded_doc_text
-        st.caption(f"已解析 {len(doc_text)} 字符，将并入实证上下文并用于全文内容研判")
-        # 基于全文内容进行一次固定规则的分析与研判
-        analysis = analyze_uploaded_text(doc_text)
-        st.session_state.uploaded_doc_analysis = analysis
-        # 文件名与类型用于报告展示
-        fname = getattr(uploaded_doc, "name", "") or "未命名文档"
-        ext = ""
-        if "." in fname:
-            ext = fname.rsplit(".", 1)[1].lower()
-        st.session_state.uploaded_doc_report = generate_uploaded_doc_report(analysis, fname, ext)
-else:
-    if "_doc_parse_key" in st.session_state:
-        del st.session_state["_doc_parse_key"]
-if not PDF_AVAILABLE:
-    st.caption("💡 支持 PDF：pip install pymupdf 或 pip install pypdf")
-if not OCR_AVAILABLE:
-    st.caption("💡 扫描版 PDF 可启用 OCR：pip install pdf2image pytesseract（另需安装 Tesseract 程序）")
-if not DOCX_AVAILABLE:
-    st.caption("💡 支持 Word：pip install python-docx")
+# 文本种子输入（替代上传，直接粘贴全文用于研判）
+st.subheader("📝 文本种子输入（用于综合分析研判）")
+seed_text = st.text_area(
+    "在此粘贴需要研判的完整文本内容（可来自 PDF、Word、报告等）",
+    value=st.session_state.get("uploaded_doc_text", ""),
+    height=220,
+    placeholder="将需要分析研判的全文粘贴到这里，例如年报、专项报告、政策文件、调查材料等。\n系统会直接基于这些文字做内容分析与最终综合研判。",
+)
+if seed_text:
+    st.session_state.uploaded_doc_text = seed_text
+    # 基于全文内容进行一次固定规则的分析与研判
+    analysis = analyze_uploaded_text(seed_text)
+    st.session_state.uploaded_doc_analysis = analysis
+    st.session_state.uploaded_doc_report = generate_uploaded_doc_report(analysis, "用户输入文本", "txt")
 
 # 多轮记忆：引用历史推演
 _dbg("15-加载历史文件")
@@ -1742,7 +1718,7 @@ if run and client and event:
                 s.update(label="🌐 检索实证案例")
                 doc_text = st.session_state.get("uploaded_doc_text") or ""
                 if doc_text and not doc_text.startswith("[") and len(doc_text) > 200:
-                    s.update(label="📄 合并用户上传材料到实证上下文")
+                    s.update(label="📄 合并用户输入文本到实证上下文")
                     facts = f"""【用户上传的种子材料】
 ---
 {doc_text[:28000]}
