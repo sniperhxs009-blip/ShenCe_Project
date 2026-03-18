@@ -1797,7 +1797,12 @@ with st.expander("⚙️ 仿真控制面板", expanded=True):
         st.plotly_chart(fig_eff, use_container_width=True)
     st.caption(f"当前模式：{sim_mode}；随机种子：{seed}（相同输入 + 相同种子可复现演化轨迹）")
 
-reset = st.button("🔁 重置仿真", use_container_width=True)
+# 启动/重跑按钮（全流程自动演化，不分步）
+btn_cols = st.columns([3, 1])
+with btn_cols[0]:
+    run = st.button("🚀 启动/重新推演", type="primary", use_container_width=True)
+with btn_cols[1]:
+    reset = st.button("🔁 重置仿真", use_container_width=True)
 
 def request_reset():
     st.session_state.reset_requested = True
@@ -1825,7 +1830,7 @@ auto_sig = json.dumps(
     ensure_ascii=False,
     sort_keys=True,
 )[:12000]
-should_autorun = bool(client and event and (st.session_state.get("_auto_run_sig") != auto_sig))
+should_autorun = bool(client and event and (run or (st.session_state.get("_auto_run_sig") != auto_sig)))
 if should_autorun:
     try:
         random.seed(int(seed))
