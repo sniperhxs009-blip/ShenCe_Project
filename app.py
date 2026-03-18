@@ -1364,6 +1364,140 @@ def gen_causal(event):
     except Exception as e:
         return f"[因果链生成异常] {str(e)[:100]}\n请检查 API 配置后重新运行。"
 
+def _mp_call_json(role_name: str, prompt: str, timeout: int = 45) -> dict:
+    """多视角研判调用：强制 JSON 输出并容错解析。"""
+    if not client:
+        return {"error": "no_client", "role": role_name}
+    try:
+        res = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            timeout=timeout,
+        )
+        j = safe_json(res.choices[0].message.content)
+        if not isinstance(j, dict):
+            j = {"raw": str(j)}
+        j.setdefault("role", role_name)
+        return j
+    except Exception as e:
+        return {"role": role_name, "error": str(e)[:160]}
+
+def multi_perspective_assess(event: str, empirical: str, timeline, swan: str, matrix: dict, resources: dict) -> dict:
+    """
+    4 视角 + 1 裁决的综合研判：每个视角输出 judgement + forecast + confidence + assumptions + triggers + recommendations。
+    最后裁决视角输出综合结论与情景区间。
+    """
+    ctx = f"""事件：{event}
+实证材料：{(empirical or '')[:12000]}
+演化时序：{str(timeline)[:6000]}
+黑天鹅：{swan}
+社会状态（0-100）：{matrix}
+资源状态（0-100）：{resources}
+"""
+    common_rules = """你必须遵守：
+1) 不得编造任何未在输入中出现的事实或数字；
+2) 若信息不足必须明确写“不确定/需补充”；
+3) 必须输出 JSON，包含字段：judgement（判断）、forecast（推演预测）、confidence（0-1）、assumptions（要点列表）、triggers（触发条件列表）、recommendations（建议列表）。
+4) judgement 与 forecast 必须分开写清楚，且每段 120-220 字。
+"""
+
+    prompts = {
+        "保守派风险官": f"""你是“保守派风险官”，目标是避免过度反应，强调证据与稳健。
+{common_rules}
+输入如下：
+{ctx}
+""",
+        "危机派应急官": f"""你是“危机派应急官”，目标是识别最坏情境与脆弱环节，提前布防，但仍不得编造。
+{common_rules}
+输入如下：
+{ctx}
+""",
+        "机制/数据审计官": f"""你是“机制/数据审计官”，只做一致性审计与逻辑校验：哪些推断站得住，哪些是过推；指出矛盾与缺口。
+{common_rules}
+输入如下：
+{ctx}
+""",
+        "民生/社会心理官": f"""你是“民生/社会心理官”，评估公众行为、舆情传播、群体事件的现实边界与反馈回路，给出更贴近实际的预判。
+{common_rules}
+输入如下：
+{ctx}
+""",
+    }
+
+    views = {}
+    for role_name, p in prompts.items():
+        views[role_name] = _mp_call_json(role_name, p, timeout=45)
+
+    # 裁决：汇总分歧、给出情景区间与最终综合建议
+    arb_rules = """你是“裁决/汇总官”。你必须：
+1) 逐条列出四个视角的主要分歧点（至少3条）；
+2) 给出综合 judgement（判断）与综合 forecast（推演预测），并输出三情景：保守/基准/悲观（每个 80-140 字）；
+3) 给出综合 confidence（0-1），以及最关键的 5 条 triggers（触发条件）与 6 条 recommendations（建议）。
+4) 严禁编造输入中没有的事实或数字。
+严格返回 JSON，字段：disagreements（列表）、judgement、forecast、scenarios（对象含 conservative/base/bear）、confidence、triggers（列表）、recommendations（列表）。
+"""
+    arb_prompt = f"""{arb_rules}
+输入上下文：
+{ctx}
+四视角输出（JSON）：
+{json.dumps(views, ensure_ascii=False)[:12000]}
+"""
+    arbitration = _mp_call_json("裁决/汇总官", arb_prompt, timeout=60)
+    return {"views": views, "arbitration": arbitration}
+
+def _format_mp_block(mp: dict) -> str:
+    """将多视角研判结果格式化为可读 Markdown。"""
+    if not mp or not isinstance(mp, dict):
+        return ""
+    views = mp.get("views") or {}
+    arb = mp.get("arbitration") or {}
+
+    def _fmt_list(xs):
+        if not xs:
+            return "—"
+        if isinstance(xs, str):
+            return xs
+        if isinstance(xs, list):
+            return "\n".join([f"- {str(x)[:220]}" for x in xs[:12]]) or "—"
+        return str(xs)[:600]
+
+    out = "## 九、多视角研判（4 视角 + 1 裁决）\n\n"
+    # 4 views
+    for role_name in ["保守派风险官", "危机派应急官", "机制/数据审计官", "民生/社会心理官"]:
+        v = views.get(role_name) or {}
+        out += f"### 视角：{role_name}\n\n"
+        if v.get("error"):
+            out += f"- 调用异常：{v.get('error')}\n\n"
+            continue
+        out += f"- judgement：{str(v.get('judgement','')).strip()}\n"
+        out += f"- forecast：{str(v.get('forecast','')).strip()}\n"
+        out += f"- confidence：{v.get('confidence','')}\n"
+        out += f"- assumptions：\n{_fmt_list(v.get('assumptions'))}\n"
+        out += f"- triggers：\n{_fmt_list(v.get('triggers'))}\n"
+        out += f"- recommendations：\n{_fmt_list(v.get('recommendations'))}\n\n"
+
+    # arbitration
+    out += "### 裁决：综合结论（汇总官）\n\n"
+    if arb.get("error"):
+        out += f"- 调用异常：{arb.get('error')}\n"
+        return out
+    out += f"- disagreements：\n{_fmt_list(arb.get('disagreements'))}\n"
+    out += f"- judgement：{str(arb.get('judgement','')).strip()}\n"
+    out += f"- forecast：{str(arb.get('forecast','')).strip()}\n"
+    out += f"- scenarios：\n"
+    sc = arb.get("scenarios") or {}
+    if isinstance(sc, dict):
+        out += f"  - conservative：{str(sc.get('conservative','')).strip()}\n"
+        out += f"  - base：{str(sc.get('base','')).strip()}\n"
+        out += f"  - bear：{str(sc.get('bear','')).strip()}\n"
+    else:
+        out += f"  - {str(sc)[:600]}\n"
+    out += f"- confidence：{arb.get('confidence','')}\n"
+    out += f"- triggers：\n{_fmt_list(arb.get('triggers'))}\n"
+    out += f"- recommendations：\n{_fmt_list(arb.get('recommendations'))}\n\n"
+    return out
+
 def gen_report(event, facts, timeline, swan, matrix, resources):
     empirical = facts
     prompt = f"""
@@ -1380,7 +1514,13 @@ def gen_report(event, facts, timeline, swan, matrix, resources):
 报告必须包含：1. 事件定级 2. 物理瘫痪分析 3. 社会临界点 4. 演化复盘 5. 风险预警 6. 干预建议 7. 结论
 """
     try:
-        return client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}], timeout=60).choices[0].message.content
+        base_report = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}], timeout=60).choices[0].message.content
+        # 直接启用多视角研判，并合并进最终综合研判报告（不加开关）
+        mp = multi_perspective_assess(event, empirical, timeline, swan, matrix, resources)
+        mp_block = _format_mp_block(mp)
+        if mp_block:
+            return f"{base_report}\n\n---\n\n{mp_block}"
+        return base_report
     except Exception as e:
         return f"【报告生成异常】API 调用失败：{str(e)[:120]}\n请检查网络与 API 配置后重新运行仿真并导出报告。"
 
