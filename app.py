@@ -805,6 +805,12 @@ RESOURCE_DISPLAY_POOLS = {
     "电力": ["电力供应", "能源储备", "供电能力", "燃油储备", "应急电源", "发电能力", "燃料储备", "电力保障", "备用电力", "能源调度", "供电设施", "发电容量"],
     "通信": ["通信保障", "网络覆盖", "信息传播", "广播系统", "联络能力", "通信能力", "互联网接入", "移动网络", "信息基础设施", "通信设施", "联络通道", "信息渠道"],
     "交通": ["交通运力", "物流能力", "运输保障", "道路通行", "配送能力", "交通管制", "疏散通道", "运输网络", "物流通道", "交通保障", "运力储备", "路网状况"],
+    "供水": ["供水保障", "自来水供应", "水务调度", "净水能力", "应急供水", "供水管网", "水源保障", "送水能力", "水务应急队", "水厂产能"],
+    "燃气": ["燃气供应", "燃气管网", "燃气保障", "燃料供给", "气源调度", "燃气抢修", "供气能力", "燃气储备", "燃气调压站", "燃气应急队"],
+    "工程抢修": ["工程抢修力量", "市政抢修队", "线路抢修队", "抢修人员", "应急维修队", "检修力量", "工程保障", "设备检修", "设施抢修", "应急工程队"],
+    "财政资金": ["财政资金", "应急资金", "专项拨付", "资金保障", "财政调度", "救助资金", "资金池", "财政支持", "紧急预算", "应急专项资金"],
+    "网信/舆情": ["网信力量", "舆情引导", "信息发布能力", "谣言处置力量", "宣传动员", "信息通报", "舆情监测", "应急发布机制", "权威发布", "网络治理力量"],
+    "安置保障": ["安置保障", "临时安置点", "住宿保障", "群众安置", "救助保障", "安置资源", "生活安置", "救助站点", "临时收容", "安置服务能力"],
 }
 INFRA_DISPLAY_POOLS = {
     "电力": ["电力供应网", "供电网络", "电网系统", "能源基础设施", "配电系统", "电力设施", "供电体系", "输电网络", "电网", "供电保障"],
@@ -978,15 +984,21 @@ def extract_evidence_factors_from_items(evidence_items: list[dict], fallback_tex
 
 def intervention_profile(name: str) -> dict:
     # 成本（消耗资源）与效果（降低风险/焦虑、提升行政）的机制化参数
+    # 资源类型扩展：覆盖水务、燃气、抢修、财政、网信舆情、安置等常见处置资源
+    RESOURCE_KEYS = ["警力", "医疗", "物资", "电力", "通信", "交通", "供水", "燃气", "工程抢修", "财政资金", "网信/舆情", "安置保障"]
     profiles = {
-        "无": {"cost": {"警力": 1, "物资": 0, "电力": 0, "通信": 0, "交通": 0, "医疗": 0}, "effect": {"calm": 0.00, "order": 0.00, "restore": 0.00}},
-        "紧急物资投放": {"cost": {"警力": 2, "物资": 12, "交通": 6, "医疗": 2}, "effect": {"calm": 0.10, "order": 0.03, "restore": 0.04}},
-        "媒体安抚": {"cost": {"通信": 4, "警力": 1}, "effect": {"calm": 0.14, "order": 0.02, "restore": 0.00}},
-        "加强安保": {"cost": {"警力": 10, "交通": 4}, "effect": {"calm": 0.03, "order": 0.12, "restore": 0.00}},
-        "全城宵禁": {"cost": {"警力": 14, "交通": 10, "物资": 3}, "effect": {"calm": 0.05, "order": 0.18, "restore": 0.00}},
-        "电力抢修": {"cost": {"电力": 10, "交通": 4, "物资": 4, "医疗": 1}, "effect": {"calm": 0.02, "order": 0.04, "restore": 0.16}},
+        "无": {"cost": {"警力": 1}, "effect": {"calm": 0.00, "order": 0.00, "restore": 0.00}},
+        "紧急物资投放": {"cost": {"警力": 2, "物资": 12, "交通": 6, "医疗": 2, "财政资金": 6, "安置保障": 4}, "effect": {"calm": 0.10, "order": 0.03, "restore": 0.04}},
+        "媒体安抚": {"cost": {"通信": 4, "警力": 1, "网信/舆情": 6, "财政资金": 2}, "effect": {"calm": 0.14, "order": 0.02, "restore": 0.00}},
+        "加强安保": {"cost": {"警力": 10, "交通": 4, "通信": 2}, "effect": {"calm": 0.03, "order": 0.12, "restore": 0.00}},
+        "全城宵禁": {"cost": {"警力": 14, "交通": 10, "物资": 3, "通信": 2, "财政资金": 3}, "effect": {"calm": 0.05, "order": 0.18, "restore": 0.00}},
+        "电力抢修": {"cost": {"电力": 10, "交通": 4, "物资": 4, "医疗": 1, "工程抢修": 10, "财政资金": 5}, "effect": {"calm": 0.02, "order": 0.04, "restore": 0.16}},
     }
-    return profiles.get(name, profiles["无"])
+    prof = profiles.get(name, profiles["无"])
+    cost = dict((prof.get("cost") or {}))
+    for k in RESOURCE_KEYS:
+        cost.setdefault(k, 0)
+    return {"cost": cost, "effect": prof.get("effect", {"calm": 0.0, "order": 0.0, "restore": 0.0})}
 
 def init_infrastructure(factors: dict) -> dict:
     """
@@ -1027,7 +1039,7 @@ def mechanistic_step(state: dict, resources: dict, factors: dict, intervention: 
     返回 (new_state, new_resources, new_infra, audit)
     """
     s = {k: float(state.get(k, 50)) for k in ["行政效能", "焦虑指数", "资源缺口", "动荡风险"]}
-    r = {k: float(resources.get(k, 50)) for k in ["警力", "医疗", "物资", "电力", "通信", "交通"]}
+    r = {k: float(resources.get(k, 50)) for k in ["警力", "医疗", "物资", "电力", "通信", "交通", "供水", "燃气", "工程抢修", "财政资金", "网信/舆情", "安置保障"]}
     inf = {k: float(infra.get(k, 80)) for k in ["电力", "通信", "交通", "供水"]}
 
     prof = intervention_profile(intervention)
@@ -1283,7 +1295,10 @@ def init_resources():
     return {
         "警力": random.randint(60,95), "医疗": random.randint(50,90),
         "物资": random.randint(30,85), "电力": random.randint(20,70),
-        "通信": random.randint(40,90), "交通": random.randint(30,80)
+        "通信": random.randint(40,90), "交通": random.randint(30,80),
+        "供水": random.randint(40,90), "燃气": random.randint(40,90),
+        "工程抢修": random.randint(30,85), "财政资金": random.randint(40,95),
+        "网信/舆情": random.randint(35,90), "安置保障": random.randint(30,85),
     }
 
 def evolve_step(event, facts, matrix, step, intervention, resources):
@@ -1634,14 +1649,14 @@ with st.expander("⚙️ 仿真控制面板", expanded=True):
         # 干预策略成本与效果可视化
         st.markdown("**📊 干预策略成本与效果对比**")
         all_interventions = ["无","紧急物资投放","媒体安抚","加强安保","全城宵禁","电力抢修"]
-        resource_keys = ["警力","医疗","物资","电力","通信","交通"]
+        resource_keys = ["警力","医疗","物资","电力","通信","交通","供水","燃气","工程抢修","财政资金","网信/舆情","安置保障"]
         cost_data = {k: [] for k in resource_keys}
         for inv in all_interventions:
             prof = intervention_profile(inv)
             for rk in resource_keys:
                 cost_data[rk].append(prof["cost"].get(rk, 0))
         fig_cost = go.Figure()
-        colors_r = ["#58a6ff","#2ea043","#f85149","#f0883e","#a371f7","#8b949e"]
+        colors_r = ["#58a6ff","#2ea043","#f85149","#f0883e","#a371f7","#8b949e","#0ea5e9","#22c55e","#f59e0b","#ef4444","#a78bfa","#14b8a6"]
         for i, rk in enumerate(resource_keys):
             fig_cost.add_trace(go.Bar(name=rk, x=all_interventions, y=cost_data[rk], marker_color=colors_r[i]))
         fig_cost.update_layout(barmode="stack", height=220, margin=dict(t=30,b=30), xaxis_tickangle=-25, legend=dict(orientation="h", y=1.1))
