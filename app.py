@@ -2027,43 +2027,7 @@ elif st.session_state.timeline:
 </div>
 """, unsafe_allow_html=True)
 
-    # 2. 资源调度面板（展示名称根据事件动态生成，体现灵活分析）
-    st.subheader("🚚 资源与兵力调度面板")
-    r = st.session_state.resources[-1]
-    res_display = st.session_state.get("resource_display_map") or {}
-    r_keys = list(r.keys())
-    # 按行分布资源卡片，避免资源种类增加后列数不够导致 IndexError
-    num_cols = 6
-    r_cols = st.columns(num_cols)
-    for idx, k in enumerate(r_keys):
-        col = r_cols[idx % num_cols]
-        label = res_display.get(k, k)
-        title = f"{k}（{label}）" if label != k else k
-        col.markdown(f"""
-<div class='resource-card'>
-{title}<br>
-<h3>{r[k]}%</h3>
-</div>
-""", unsafe_allow_html=True)
-
-    # 2.1 基础设施子系统（高保真模式，展示名称根据事件动态生成）
-    if sim_mode.startswith("高保真") and st.session_state.get("infra_history"):
-        st.subheader("🏗️ 基础设施子系统面板（高保真）")
-        inf = st.session_state.infra_history[-1]
-        inf_cols = st.columns(4)
-        inf_keys = ["电力", "通信", "交通", "供水"]
-        inf_display = st.session_state.get("infra_display_map") or {}
-        for i, k in enumerate(inf_keys):
-            label = inf_display.get(k, k)
-            inf_cols[i].markdown(
-                f"""
-<div class='resource-card'>
-{label}<br>
-<h3>{inf.get(k, 0)}%</h3>
-</div>
-""",
-                unsafe_allow_html=True,
-            )
+    # 2. 资源与基础设施面板：按需求仅隐藏界面展示，后台仍保留计算与数据
 
     # 3. 时序曲线 + 雷达图
     st.subheader("📈 指标演化曲线 & 风险雷达图")
@@ -2080,18 +2044,7 @@ elif st.session_state.timeline:
         fig.update_layout(polar=dict(radialaxis=dict(range=[0,100])), height=350, paper_bgcolor="#0e1117", font=dict(color="white"))
         st.plotly_chart(fig, use_container_width=True)
 
-    # 3.1 关键节点摘要
-    st.subheader("📌 关键节点摘要")
-    df_m = pd.DataFrame(st.session_state.matrix_history)
-    step_labels = ["初始"] + [f"第{i}步" for i in range(1, len(df_m))]
-    df_m.insert(0, "阶段", step_labels)
-    max_risk_step = df_m["动荡风险"].idxmax()
-    max_anxiety_step = df_m["焦虑指数"].idxmax()
-    key_cols = st.columns(4)
-    key_cols[0].metric("动荡风险峰值阶段", step_labels[max_risk_step], f"值 {df_m.loc[max_risk_step, '动荡风险']:.0f}")
-    key_cols[1].metric("焦虑指数峰值阶段", step_labels[max_anxiety_step], f"值 {df_m.loc[max_anxiety_step, '焦虑指数']:.0f}")
-    key_cols[2].metric("最终行政效能", f"{m['行政效能']}%", "当前步")
-    key_cols[3].metric("最终资源缺口", f"{m['资源缺口']}%", "当前步")
+    # 3.1 关键节点摘要：按需求仅隐藏界面展示，后台仍保留可用于报告/导出
 
     # 3.2 分支对比（如有分支）
     branches = st.session_state.get("scenario_branches") or []
