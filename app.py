@@ -1824,30 +1824,47 @@ def export_pdf(report: str, doc_appendix: str = ""):
     pdf = FPDF()
     has_cjk = _register_pdf_cjk_font(pdf)
     pdf.add_page()
+    # FPDF 在部分环境下对 multi_cell(w=0) 的可用宽度计算可能出错，
+    # 导致“Not enough horizontal space to render a single character”。
+    # 显式使用有效宽度可以显著降低崩溃概率。
+    effective_w = max(1.0, float(pdf.w - pdf.l_margin - pdf.r_margin))
     if has_cjk:
         pdf.set_font(_PDF_CJK_FAMILY, size=12)
-        pdf.multi_cell(0, 10, report)
+        pdf.multi_cell(effective_w, 10, report)
     else:
         pdf.set_font("Arial", size=12)
         try:
-            pdf.multi_cell(0, 10, report)
+            pdf.multi_cell(effective_w, 10, report)
         except Exception:
-            pdf.multi_cell(0, 10, report.encode("latin-1", errors="replace").decode("latin-1"))
+            safe_report = report.encode("latin-1", errors="replace").decode("latin-1")
+            pdf.multi_cell(effective_w, 10, safe_report)
     if doc_appendix and not doc_appendix.startswith("["):
         pdf.add_page()
         if has_cjk:
             pdf.set_font(_PDF_CJK_FAMILY, size=11)
-            pdf.multi_cell(0, 8, "附录：种子材料要点")
+            pdf.multi_cell(effective_w, 8, "附录：种子材料要点")
             pdf.set_font(_PDF_CJK_FAMILY, size=10)
-            pdf.multi_cell(0, 6, doc_appendix[:4000])
+            pdf.multi_cell(effective_w, 6, doc_appendix[:4000])
         else:
             pdf.set_font("Arial", size=11, style="B")
-            pdf.multi_cell(0, 8, "Appendix: seed material highlights")
+            pdf.multi_cell(effective_w, 8, "Appendix: seed material highlights")
             pdf.set_font("Arial", size=10)
+            appendix_text = doc_appendix[:4000] or ""
+            # 如果文本里缺少可断行的空白字符，FPDF 的行拆分可能会变得异常。
+            # 这里用“每 N 字符插入换行”的方式提供断点。
+            if len(appendix_text) > 180 and not re.search(r"\s", appendix_text):
+                appendix_text = "\n".join(appendix_text[i : i + 80] for i in range(0, len(appendix_text), 80))
+
             try:
-                pdf.multi_cell(0, 6, doc_appendix[:4000])
+                pdf.multi_cell(effective_w, 6, appendix_text)
             except Exception:
-                pdf.multi_cell(0, 6, doc_appendix[:4000].encode("latin-1", errors="replace").decode("latin-1"))
+                safe_appendix = appendix_text.encode("latin-1", errors="replace").decode("latin-1")
+                try:
+                    pdf.multi_cell(effective_w, 6, safe_appendix)
+                except Exception:
+                    # 最后兜底：避免导出功能直接崩溃
+                    pdf.set_font("Arial", size=8)
+                    pdf.multi_cell(effective_w, 5, "[附录内容无法正常渲染，已省略]")
     return bytes(pdf.output())
 
 # ---------------------- 主界面 ----------------------
