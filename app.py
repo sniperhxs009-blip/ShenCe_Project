@@ -23,6 +23,7 @@ import io
 import time
 import re
 import math
+from pathlib import Path
 
 # 引入外部文件解析模块（与 file-report-generator 保持一致的解析逻辑）
 EXTERNAL_PARSER_AVAILABLE = False
@@ -1786,24 +1787,68 @@ def gen_creative_response(event: str) -> str:
     except Exception as e:
         return f"[生成异常] {str(e)[:120]}\n请检查接口配置后重试。"
 
+_PDF_CJK_FAMILY = "AppHan"
+
+def _iter_pdf_cjk_font_specs():
+    """(path, ttc_face_index or None). None = single-face font or default index 0."""
+    root = Path(__file__).resolve().parent
+    windir = Path(os.environ.get("WINDIR", r"C:\Windows"))
+    specs = [
+        (root / "fonts" / "NotoSansSC-Regular.otf", None),
+        (root / "fonts" / "NotoSansSC-Regular.ttf", None),
+        (windir / "Fonts" / "msyh.ttc", 0),
+        (windir / "Fonts" / "simhei.ttf", None),
+        (Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"), 2),
+        (Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"), 2),
+    ]
+    for path, idx in specs:
+        try:
+            if path.is_file():
+                yield path, idx
+        except OSError:
+            continue
+
+def _register_pdf_cjk_font(pdf: FPDF) -> bool:
+    for path, coll in _iter_pdf_cjk_font_specs():
+        try:
+            if coll is not None:
+                pdf.add_font(_PDF_CJK_FAMILY, "", str(path), collection_font_number=coll)
+            else:
+                pdf.add_font(_PDF_CJK_FAMILY, "", str(path))
+            return True
+        except Exception:
+            continue
+    return False
+
 def export_pdf(report: str, doc_appendix: str = ""):
     pdf = FPDF()
+    has_cjk = _register_pdf_cjk_font(pdf)
     pdf.add_page()
-    pdf.set_font("Arial", size=12)
-    try:
+    if has_cjk:
+        pdf.set_font(_PDF_CJK_FAMILY, size=12)
         pdf.multi_cell(0, 10, report)
-    except Exception:
-        pdf.multi_cell(0, 10, report.encode("latin-1", errors="replace").decode("latin-1"))
+    else:
+        pdf.set_font("Arial", size=12)
+        try:
+            pdf.multi_cell(0, 10, report)
+        except Exception:
+            pdf.multi_cell(0, 10, report.encode("latin-1", errors="replace").decode("latin-1"))
     if doc_appendix and not doc_appendix.startswith("["):
         pdf.add_page()
-        pdf.set_font("Arial", size=11, style="B")
-        pdf.multi_cell(0, 8, "附录：种子材料要点")
-        pdf.set_font("Arial", size=10)
-        try:
+        if has_cjk:
+            pdf.set_font(_PDF_CJK_FAMILY, size=11)
+            pdf.multi_cell(0, 8, "附录：种子材料要点")
+            pdf.set_font(_PDF_CJK_FAMILY, size=10)
             pdf.multi_cell(0, 6, doc_appendix[:4000])
-        except Exception:
-            pdf.multi_cell(0, 6, doc_appendix[:4000].encode("latin-1", errors="replace").decode("latin-1"))
-    return bytes(pdf.output(dest='S'))
+        else:
+            pdf.set_font("Arial", size=11, style="B")
+            pdf.multi_cell(0, 8, "Appendix: seed material highlights")
+            pdf.set_font("Arial", size=10)
+            try:
+                pdf.multi_cell(0, 6, doc_appendix[:4000])
+            except Exception:
+                pdf.multi_cell(0, 6, doc_appendix[:4000].encode("latin-1", errors="replace").decode("latin-1"))
+    return bytes(pdf.output())
 
 # ---------------------- 主界面 ----------------------
 _dbg("14-进入主界面")
@@ -1819,10 +1864,7 @@ seed_text = st.text_area(
 )
 if seed_text:
     st.session_state.uploaded_doc_text = seed_text
-    # 基于全文内容进行一次固定规则的分析与研判
-    analysis = analyze_uploaded_text(seed_text)
-    st.session_state.uploaded_doc_analysis = analysis
-    st.session_state.uploaded_doc_report = generate_uploaded_doc_report(analysis, "用户输入文本", "txt")
+    # 仅保留种子文本用于后续上下文合并；不再生成“文档内容分析研判”报告。
 
 _dbg("15-跳过历史引用功能")
 
@@ -1836,55 +1878,9 @@ event = st.text_area(
 )
 
 # 控制面板
-with st.expander("⚙️ 仿真控制面板", expanded=True):
-    c1,c2,c3,c4 = st.columns(4)
-    with c1:
-        steps = st.slider("演化步数", 1, 8, 4)
-    with c2:
-        st.caption("推演方式：输入事件后自动全流程演化")
-    with c3:
-        intervention = st.selectbox("🎯 官方干预策略", [
-            "无","紧急物资投放","媒体安抚","加强安保","全城宵禁","电力抢修"
-        ], help="无/物资/媒体/安保/宵禁/电力，不同策略会改变社会矩阵演化系数")
-    with c4:
-        enable_swan = st.checkbox("启用黑天鹅", value=True)
-    with st.expander("📖 干预策略说明", expanded=False):
-        st.markdown("""
-- **无**：无专项干预，按自然演化
-- **紧急物资投放**：缓解资源缺口与焦虑，可能略增行政压力
-- **媒体安抚**：显著降焦虑，轻微影响行政与资源
-- **加强安保**：提升行政效能、压制动荡，略增资源消耗
-- **全城宵禁**：强控动荡与行政，但会推高焦虑
-- **电力抢修**：优先恢复行政与秩序，缓解资源与动荡
-        """)
-        # 干预策略成本与效果可视化
-        st.markdown("**📊 干预策略成本与效果对比**")
-        all_interventions = ["无","紧急物资投放","媒体安抚","加强安保","全城宵禁","电力抢修"]
-        resource_keys = ["警力","医疗","物资","电力","通信","交通","供水","燃气","工程抢修","财政资金","网信/舆情","安置保障"]
-        cost_data = {k: [] for k in resource_keys}
-        for inv in all_interventions:
-            prof = intervention_profile(inv)
-            for rk in resource_keys:
-                cost_data[rk].append(prof["cost"].get(rk, 0))
-        fig_cost = go.Figure()
-        colors_r = ["#58a6ff","#2ea043","#f85149","#f0883e","#a371f7","#8b949e","#0ea5e9","#22c55e","#f59e0b","#ef4444","#a78bfa","#14b8a6"]
-        for i, rk in enumerate(resource_keys):
-            fig_cost.add_trace(go.Bar(name=rk, x=all_interventions, y=cost_data[rk], marker_color=colors_r[i]))
-        fig_cost.update_layout(barmode="stack", height=220, margin=dict(t=30,b=30), xaxis_tickangle=-25, legend=dict(orientation="h", y=1.1))
-        st.plotly_chart(fig_cost, use_container_width=True)
-        eff_data = {"calm":[], "order":[], "restore":[]}
-        for inv in all_interventions:
-            prof = intervention_profile(inv)
-            eff_data["calm"].append(round(prof["effect"]["calm"]*100))
-            eff_data["order"].append(round(prof["effect"]["order"]*100))
-            eff_data["restore"].append(round(prof["effect"]["restore"]*100))
-        fig_eff = go.Figure()
-        fig_eff.add_trace(go.Bar(name="降焦虑", x=all_interventions, y=eff_data["calm"], marker_color="#f8c447"))
-        fig_eff.add_trace(go.Bar(name="压动荡", x=all_interventions, y=eff_data["order"], marker_color="#e34c26"))
-        fig_eff.add_trace(go.Bar(name="恢复力", x=all_interventions, y=eff_data["restore"], marker_color="#58a6ff"))
-        fig_eff.update_layout(barmode="group", height=220, margin=dict(t=30,b=30), xaxis_tickangle=-25, yaxis_title="效果系数×100", legend=dict(orientation="h", y=1.1))
-        st.plotly_chart(fig_eff, use_container_width=True)
-    st.caption(f"当前模式：{sim_mode}；随机种子：{seed}（相同输入 + 相同种子可复现演化轨迹）")
+steps = 4
+intervention = "无"
+enable_swan = st.checkbox("启用黑天鹅", value=True)
 
 # 启动/重跑按钮（全流程自动演化，不分步）
 btn_cols = st.columns([3, 1])
@@ -2243,11 +2239,6 @@ elif st.session_state.timeline:
     st.subheader("📝 战略研判报告")
     st.markdown(f"<div class='report-card'>{st.session_state.report}</div>", unsafe_allow_html=True)
 
-    # 若存在上传文档的全文内容分析报告，则一并展示，体现“基于全部内容的分析研判”
-    if st.session_state.get("uploaded_doc_report"):
-        st.subheader("📄 文档内容分析研判（基于上传全文）")
-        st.markdown(f"<div class='report-card'>{st.session_state.uploaded_doc_report}</div>", unsafe_allow_html=True)
-
     # 导出区
     d_cols = st.columns(4)
     with d_cols[0]:
@@ -2268,8 +2259,6 @@ elif st.session_state.timeline:
             "hf_params": st.session_state.get("hf_params", {}),
             "resource_display_map": st.session_state.get("resource_display_map", {}),
             "infra_display_map": st.session_state.get("infra_display_map", {}),
-            "uploaded_doc_analysis": st.session_state.get("uploaded_doc_analysis", {}),
-            "uploaded_doc_report": st.session_state.get("uploaded_doc_report", ""),
         }, ensure_ascii=False, indent=2)
         fname_json = "推演数据包"
         st.download_button("💾 导出数据包", json_data, fname_json, use_container_width=True)
